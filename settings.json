@@ -1,0 +1,29 @@
+{
+  "bench_name": "windify-hrms",
+  "node_version": "24",
+  "python_version": "3.14",
+  "nvm_version": "0.40.3",
+  "auto_mode": true,
+  "mysql_root_password": "admin",
+  "mysql_root_username": "root",
+  "admin_password": "admin",
+  "sites": [
+    "cds.windify.net"
+  ],
+  "installed_dependencies": {
+    "git": true,
+    "node": false,
+    "npm": false,
+    "yarn": false,
+    "uv": false,
+    "python": false,
+    "bench": false,
+    "mariadb": false,
+    "mysql": false,
+    "redis-server": false,
+    "wkhtmltopdf": false,
+    "cloudflared": false
+  },
+  "platform": "linux",
+  "frappe_dir": "~/frappe"
+}

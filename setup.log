@@ -1,0 +1,45 @@
+[2026-02-06 18:01:28] RUN: sudo apt update
+[2026-02-06 18:01:32] STDOUT: Hit:1 http://security.ubuntu.com/ubuntu jammy-security InRelease
+Hit:2 http://archive.ubuntu.com/ubuntu jammy InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu jammy-updates InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu jammy-backports InRelease
+Reading package lists...
+Building dependency tree...
+Reading state information...
+134 packages can be upgraded. Run 'apt list --upgradable' to see them.
+[2026-02-06 18:01:32] STDERR: WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+[2026-02-06 18:01:32] RUN: sudo apt install -y git redis-server libmariadb-dev mariadb-server mariadb-client pkg-config
+[2026-02-06 18:01:32] STDOUT: Reading package lists...
+Building dependency tree...
+Reading state information...
+pkg-config is already the newest version (0.29.2-1ubuntu3).
+git is already the newest version (1:2.34.1-1ubuntu1.15).
+libmariadb-dev is already the newest version (1:10.6.23-0ubuntu0.22.04.1).
+mariadb-client is already the newest version (1:10.6.23-0ubuntu0.22.04.1).
+mariadb-server is already the newest version (1:10.6.23-0ubuntu0.22.04.1).
+redis-server is already the newest version (5:6.0.16-1ubuntu1.1).
+You might want to run 'apt --fix-broken install' to correct these.
+The following packages have unmet dependencies:
+ wkhtmltox : Depends: xfonts-75dpi but it is not going to be installed
+[2026-02-06 18:01:32] STDERR: WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+E: Unmet dependencies. Try 'apt --fix-broken install' with no packages (or specify a solution).
+[2026-02-06 18:01:32] EXIT CODE: 100
+[2026-02-06 18:03:06] check_command git: /usr/bin/git
+[2026-02-06 18:03:06] check_command git version: git version 2.34.1
+[2026-02-06 18:03:06] check_command node: NOT FOUND
+[2026-02-06 18:03:06] check_command npm: /mnt/c/nvm4w/nodejs/npm
+[2026-02-06 18:03:06] check_command npm version stderr: /mnt/c/nvm4w/nodejs/npm: 15: exec: node: not found
+[2026-02-06 18:03:06] check_command yarn: /mnt/c/Program Files (x86)/Yarn/bin//yarn
+[2026-02-06 18:03:06] check_command yarn version stderr: Yarn requires Node.js 4.0 or higher to be installed.
+[2026-02-06 18:03:06] check_command uv: NOT FOUND
+[2026-02-06 18:03:06] check_command python: NOT FOUND
+[2026-02-06 18:03:06] check_command bench: NOT FOUND
+[2026-02-06 18:03:06] check_command mariadb: /usr/bin/mariadb
+[2026-02-06 18:03:06] check_command mariadb version: mariadb  Ver 15.1 Distrib 10.6.23-MariaDB, for debian-linux-gnu (x86_64) using  EditLine wrapper
+[2026-02-06 18:03:06] check_command mysql: /usr/bin/mysql
+[2026-02-06 18:03:06] check_command mysql version: mysql  Ver 15.1 Distrib 10.6.23-MariaDB, for debian-linux-gnu (x86_64) using  EditLine wrapper
+[2026-02-06 18:03:06] check_command redis-server: /usr/bin/redis-server
+[2026-02-06 18:03:06] check_command redis-server version: Redis server v=6.0.16 sha=00000000:0 malloc=jemalloc-5.2.1 bits=64 build=e91d7986ac6d5bb6
+[2026-02-06 18:03:06] check_command wkhtmltopdf: /usr/local/bin/wkhtmltopdf
+[2026-02-06 18:03:07] check_command wkhtmltopdf version: wkhtmltopdf 0.12.6.1 (with patched qt)
