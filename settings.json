@@ -21,7 +21,7 @@
     "mariadb": false,
     "mysql": false,
     "redis-server": false,
-    "wkhtmltopdf": false,
+    "wkhtmltopdf": true,
     "cloudflared": false
   },
   "platform": "linux",
