@@ -488,7 +488,7 @@ def setup_cloudflare_tunnel() -> None:
 
                 # Nếu Cloudflare báo còn active connections, thử cleanup rồi xoá lại
                 if "cannot delete tunnel because it has active connections" in msg_lower_del:
-                    print(
+    print(
                         f"{FG_YELLOW}Tunnel '{tunnel_name}' còn kết nối active. Đang chạy 'cloudflared tunnel cleanup {tunnel_name}' rồi xoá lại...{RESET}"
                     )
                     cleanup_proc = subprocess.run(
@@ -577,8 +577,8 @@ def setup_cloudflare_tunnel() -> None:
     if created_ok:
         print(
             "\nThông tin Cloudflare Tunnel:\n"
-            f"- Tunnel name: {tunnel_name}\n"
-            f"- Hostname: {hostname}\n"
+        f"- Tunnel name: {tunnel_name}\n"
+        f"- Hostname: {hostname}\n"
             f"- Local service: {service}\n"
             "- Config YAML đã được tạo trong ~/.cloudflared.\n"
             "- Service systemd đã được tạo và enable để chạy tunnel liên tục.\n"
@@ -738,7 +738,7 @@ def regenerate_cloudflare_config_for_existing_tunnel() -> None:
         print(
             f"{FG_YELLOW}⚠ Không thể regenerate config/service cho tunnel '{tunnel_name}'. "
             f"Vui lòng kiểm tra lại credentials và danh sách tunnel.{RESET}"
-        )
+    )
 
 
 def detect_ubuntu_codename() -> str:
