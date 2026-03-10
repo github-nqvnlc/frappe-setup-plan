@@ -1699,6 +1699,195 @@ def remove_bench_start_service() -> None:
     print(f"\n{FG_GREEN}=== Hoàn thành! Đã xóa service '{service_name}'. ==={RESET}")
 
 
+def check_cloudflare_status() -> None:
+    """
+    Kiểm tra toàn diện trạng thái Cloudflare Tunnel trên server:
+    - cloudflared có cài không, version
+    - Các service systemctl cloudflared-*
+    - Danh sách tunnel và kết nối active
+    - File config và credentials
+    - Test DNS resolve hostname đã cấu hình
+    """
+    print(f"\n{BOLD}=== KIỂM TRA TRẠNG THÁI CLOUDFLARE TUNNEL ==={RESET}")
+
+    # --- 1. Kiểm tra cloudflared có cài không ---
+    print(f"\n{FG_CYAN}[•] cloudflared binary{RESET}")
+    which_proc = subprocess.run(
+        "command -v cloudflared 2>/dev/null",
+        shell=True, capture_output=True, text=True
+    )
+    if which_proc.returncode != 0:
+        print(f"  {FG_RED}✗ cloudflared chưa được cài đặt hoặc không có trong PATH.{RESET}")
+        print(f"  {FG_YELLOW}Cài đặt bằng menu 6 (Setup Cloudflare Tunnel).{RESET}")
+        return
+    cf_path = which_proc.stdout.strip()
+    print(f"  {FG_GREEN}✓ Đường dẫn: {cf_path}{RESET}")
+
+    ver_proc = subprocess.run(
+        ["cloudflared", "--version"],
+        capture_output=True, text=True
+    )
+    version_str = (ver_proc.stdout or ver_proc.stderr).strip().splitlines()[0] if (
+        ver_proc.stdout or ver_proc.stderr
+    ) else "không đọc được"
+    print(f"  Version     : {FG_CYAN}{version_str}{RESET}")
+
+    # --- 2. Kiểm tra service systemctl ---
+    print(f"\n{FG_CYAN}[•] Service systemctl cloudflared{RESET}")
+    svc_patterns = ["cloudflared-*.service", "cloudflared.service"]
+    all_svcs: list[str] = []
+    for pat in svc_patterns:
+        r = subprocess.run(
+            f"systemctl list-unit-files '{pat}' --no-legend --plain 2>/dev/null | awk '{{print $1}}'",
+            shell=True, capture_output=True, text=True
+        )
+        for line in r.stdout.splitlines():
+            svc = line.strip()
+            if svc and svc not in all_svcs:
+                all_svcs.append(svc)
+
+    if not all_svcs:
+        print(f"  {FG_YELLOW}⚠ Không có service cloudflared nào trong systemd.{RESET}")
+    else:
+        for svc in all_svcs:
+            active_proc = subprocess.run(
+                f"systemctl is-active '{svc}' 2>/dev/null",
+                shell=True, capture_output=True, text=True
+            )
+            enabled_proc = subprocess.run(
+                f"systemctl is-enabled '{svc}' 2>/dev/null",
+                shell=True, capture_output=True, text=True
+            )
+            active = active_proc.stdout.strip() or "unknown"
+            enabled = enabled_proc.stdout.strip() or "unknown"
+            active_color = FG_GREEN if active == "active" else FG_RED
+            enabled_color = FG_GREEN if enabled == "enabled" else FG_YELLOW
+            print(
+                f"  {active_color}[{active}]{RESET} "
+                f"{enabled_color}[{enabled}]{RESET} "
+                f"{svc}"
+            )
+
+    # --- 3. Kiểm tra file cấu hình ---
+    print(f"\n{FG_CYAN}[•] File cấu hình ~/.cloudflared{RESET}")
+    home = os.path.expanduser("~")
+    cf_dir = os.path.join(home, ".cloudflared")
+    if not os.path.exists(cf_dir):
+        print(f"  {FG_YELLOW}⚠ Thư mục {cf_dir} không tồn tại.{RESET}")
+    else:
+        # Liệt kê các file quan trọng
+        important_files = ["config.yml", "cert.pem"]
+        for fname in important_files:
+            fpath = os.path.join(cf_dir, fname)
+            if os.path.exists(fpath):
+                size = os.path.getsize(fpath)
+                print(f"  {FG_GREEN}✓ {fpath}{RESET} ({size} bytes)")
+            else:
+                print(f"  {FG_YELLOW}- {fpath}: không tìm thấy{RESET}")
+
+        # Hiển thị nội dung config.yml nếu có
+        config_path = os.path.join(cf_dir, "config.yml")
+        if os.path.exists(config_path):
+            print(f"  {DIM}--- Nội dung config.yml ---{RESET}")
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    for line in f:
+                        print(f"    {DIM}{line.rstrip()}{RESET}")
+            except OSError:
+                print(f"    {FG_YELLOW}Không đọc được config.yml{RESET}")
+
+        # Đếm file credentials (.json)
+        cred_files = [
+            f for f in os.listdir(cf_dir)
+            if f.endswith(".json")
+        ]
+        if cred_files:
+            print(f"  Credentials : {FG_GREEN}{len(cred_files)} file(s){RESET}: {', '.join(cred_files)}")
+        else:
+            print(f"  {FG_YELLOW}Không có file credentials (.json) nào.{RESET}")
+
+    # --- 4. Danh sách tunnel trên Cloudflare ---
+    print(f"\n{FG_CYAN}[•] Danh sách tunnel trên Cloudflare{RESET}")
+    list_proc = subprocess.run(
+        ["cloudflared", "tunnel", "list", "--output", "json"],
+        capture_output=True, text=True
+    )
+    if list_proc.returncode != 0:
+        err = (list_proc.stderr or "").strip()
+        print(f"  {FG_YELLOW}⚠ Không lấy được danh sách tunnel.{RESET}")
+        if err:
+            print(f"  {DIM}Lỗi: {err[:200]}{RESET}")
+        print(f"  {DIM}Có thể chưa đăng nhập: cloudflared tunnel login{RESET}")
+    else:
+        try:
+            tunnels = json.loads(list_proc.stdout)
+            if not isinstance(tunnels, list) or not tunnels:
+                print(f"  {FG_YELLOW}Không có tunnel nào được tạo.{RESET}")
+            else:
+                print(f"  Tìm thấy {FG_CYAN}{len(tunnels)}{RESET} tunnel(s):")
+                print(f"  {'Tên tunnel':<30} {'Tunnel ID':<38} {'Trạng thái'}")
+                print(f"  {'-'*30} {'-'*38} {'-'*10}")
+                for t in tunnels:
+                    t_name = t.get("name", "?")[:29]
+                    t_id   = t.get("id", "?")[:37]
+                    t_status = t.get("status", "inactive")
+                    s_color = FG_GREEN if t_status in ("active", "healthy") else FG_YELLOW
+                    print(f"  {t_name:<30} {DIM}{t_id:<38}{RESET} {s_color}{t_status}{RESET}")
+
+                    # Hiển thị kết nối active của tunnel
+                    conn_proc = subprocess.run(
+                        ["cloudflared", "tunnel", "info", t.get("name", ""), "--output", "json"],
+                        capture_output=True, text=True
+                    )
+                    if conn_proc.returncode == 0:
+                        try:
+                            info = json.loads(conn_proc.stdout)
+                            conns = info.get("conns", []) or []
+                            if conns:
+                                print(f"    {DIM}Kết nối: {len(conns)} connection(s){RESET}")
+                                for c in conns[:3]:  # hiển tối đa 3
+                                    colo = c.get("location", "?")
+                                    proto = c.get("protocol", "?")
+                                    print(f"      {DIM}colo={colo} proto={proto}{RESET}")
+                        except json.JSONDecodeError:
+                            pass
+        except json.JSONDecodeError:
+            print(f"  {FG_YELLOW}Không parse được kết quả tunnel list.{RESET}")
+
+    # --- 5. Test DNS resolve hostname từ config.yml ---
+    print(f"\n{FG_CYAN}[•] Kiểm tra DNS hostname đã cấu hình{RESET}")
+    config_path = os.path.join(cf_dir, "config.yml") if os.path.exists(cf_dir) else ""
+    hostnames_found: list[str] = []
+    if config_path and os.path.exists(config_path):
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("hostname:"):
+                        hn = line.split(":", 1)[1].strip()
+                        if hn:
+                            hostnames_found.append(hn)
+        except OSError:
+            pass
+
+    if not hostnames_found:
+        print(f"  {FG_YELLOW}Không tìm thấy hostname trong config.yml.{RESET}")
+    else:
+        for hn in hostnames_found:
+            dig_proc = subprocess.run(
+                f"dig +short '{hn}' 2>/dev/null || nslookup '{hn}' 2>/dev/null | grep Address | tail -1",
+                shell=True, capture_output=True, text=True
+            )
+            resolved = dig_proc.stdout.strip()
+            if resolved:
+                print(f"  {FG_GREEN}✓ {hn}{RESET} → {resolved}")
+            else:
+                print(f"  {FG_YELLOW}⚠ {hn}{RESET} → không resolve được (DNS chưa cấu hình hoặc chưa propagate)")
+
+    print(f"\n{FG_GREEN}{'='*50}{RESET}")
+    print(f"{FG_GREEN}Kiểm tra xong.{RESET}")
+
+
 def detect_platform() -> str:
     system = platform.system().lower()
     if system == "darwin":
@@ -1746,6 +1935,7 @@ def print_menu(detected: str) -> None:
     print(f"  {FG_RED}10{RESET}) Xóa service systemctl của bench (frappe-bench-web, worker, schedule...)") 
     print(f"  {FG_CYAN}11{RESET}) Tạo service tự động 'bench start' sau reboot (tạo lại nếu đã tồn tại)")
     print(f"  {FG_RED}12{RESET}) Xóa service tự động bench start")
+    print(f"  {FG_CYAN}13{RESET}) Kiểm tra trạng thái Cloudflare Tunnel")
     print(f"  {FG_CYAN}0{RESET}) Thoát")
 
 
@@ -1813,6 +2003,8 @@ def main() -> None:
             create_bench_start_service()
         elif choice == "12":
             remove_bench_start_service()
+        elif choice == "13":
+            check_cloudflare_status()
         elif choice == "0":
             print("Thoát Frappe setup menu.")
             break
