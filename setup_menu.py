@@ -488,9 +488,7 @@ def setup_cloudflare_tunnel() -> None:
 
                 # Nếu Cloudflare báo còn active connections, thử cleanup rồi xoá lại
                 if "cannot delete tunnel because it has active connections" in msg_lower_del:
-    print(
-                        f"{FG_YELLOW}Tunnel '{tunnel_name}' còn kết nối active. Đang chạy 'cloudflared tunnel cleanup {tunnel_name}' rồi xoá lại...{RESET}"
-                    )
+                    print(f"{FG_YELLOW}Tunnel '{tunnel_name}' còn kết nối active. Đang chạy 'cloudflared tunnel cleanup {tunnel_name}' rồi xoá lại...{RESET}")
                     cleanup_proc = subprocess.run(
                         ["cloudflared", "tunnel", "cleanup", tunnel_name],
                         capture_output=True,
@@ -739,6 +737,106 @@ def regenerate_cloudflare_config_for_existing_tunnel() -> None:
             f"{FG_YELLOW}⚠ Không thể regenerate config/service cho tunnel '{tunnel_name}'. "
             f"Vui lòng kiểm tra lại credentials và danh sách tunnel.{RESET}"
     )
+
+
+def remove_cloudflare_tunnels() -> None:
+    """
+    Xóa toàn bộ cloudflared và các service systemctl liên quan trên server này.
+    KHÔNG xóa tunnel hay DNS records trên Cloudflare dashboard.
+    """
+    print("\n=== XÓA CLOUDFLARED VÀ SERVICE SYSTEMCTL TRÊN SERVER ===")
+    print(
+        "Các bước sẽ thực hiện:\n"
+        "- Dừng và disable toàn bộ service cloudflared-*.service trong systemd.\n"
+        "- Xóa các file service cloudflared-*.service khỏi /etc/systemd/system/.\n"
+        "- Chạy systemctl daemon-reload để reload cấu hình systemd.\n"
+        "- Xóa thư mục ~/.cloudflared và /etc/cloudflared (credentials, config, cert.pem).\n"
+        "- Gỡ package cloudflared khỏi hệ thống (apt remove).\n"
+        "LƯU Ý: Tunnel và DNS records trên Cloudflare dashboard sẽ KHÔNG bị xóa."
+    )
+    if not confirm("Tiếp tục xóa cloudflared và service liên quan trên server này?"):
+        print("Huỷ thao tác xóa cloudflared.")
+        return
+
+    # Bước 1: Tìm và dừng toàn bộ service cloudflared-* trong systemd
+    print(f"\n{FG_CYAN}--- Bước 1: Dừng và disable toàn bộ service cloudflared-* ---{RESET}")
+    list_services_proc = subprocess.run(
+        "systemctl list-unit-files 'cloudflared-*.service' --no-legend --plain 2>/dev/null | awk '{print $1}'",
+        shell=True, capture_output=True, text=True
+    )
+    cf_services = [s.strip() for s in list_services_proc.stdout.splitlines() if s.strip()]
+
+    # Cũng tìm service cloudflared (không có hậu tố tunnel name)
+    base_service_proc = subprocess.run(
+        "systemctl list-unit-files 'cloudflared.service' --no-legend --plain 2>/dev/null | awk '{print $1}'",
+        shell=True, capture_output=True, text=True
+    )
+    if base_service_proc.stdout.strip():
+        cf_services.append("cloudflared.service")
+
+    if cf_services:
+        print(f"Tìm thấy {len(cf_services)} service(s): {', '.join(cf_services)}")
+        for svc in cf_services:
+            print(f"{DIM}  Dừng: {svc}{RESET}")
+            subprocess.run(f"sudo systemctl stop '{svc}' 2>/dev/null || true", shell=True)
+            print(f"{DIM}  Disable: {svc}{RESET}")
+            subprocess.run(f"sudo systemctl disable '{svc}' 2>/dev/null || true", shell=True)
+        print(f"{FG_GREEN}✓ Đã dừng và disable tất cả service cloudflared.{RESET}")
+    else:
+        print(f"{FG_YELLOW}Không tìm thấy service cloudflared-* nào đang chạy.{RESET}")
+
+    # Bước 2: Xóa file service khỏi /etc/systemd/system/
+    print(f"\n{FG_CYAN}--- Bước 2: Xóa file service khỏi /etc/systemd/system/ ---{RESET}")
+    find_proc = subprocess.run(
+        "find /etc/systemd/system/ -maxdepth 1 -name 'cloudflared*.service' 2>/dev/null",
+        shell=True, capture_output=True, text=True
+    )
+    service_files = [f.strip() for f in find_proc.stdout.splitlines() if f.strip()]
+    if service_files:
+        for sf in service_files:
+            print(f"{DIM}  Xóa: {sf}{RESET}")
+            subprocess.run(f"sudo rm -f '{sf}'", shell=True)
+        print(f"{FG_GREEN}✓ Đã xóa {len(service_files)} file service.{RESET}")
+    else:
+        print(f"{FG_YELLOW}Không tìm thấy file service cloudflared nào trong /etc/systemd/system/.{RESET}")
+
+    # Bước 3: Reload systemd daemon
+    print(f"\n{FG_CYAN}--- Bước 3: Reload systemd daemon ---{RESET}")
+    subprocess.run("sudo systemctl daemon-reload", shell=True)
+    print(f"{FG_GREEN}✓ Đã reload systemd daemon.{RESET}")
+
+    # Bước 4: Xóa thư mục ~/.cloudflared và /etc/cloudflared
+    print(f"\n{FG_CYAN}--- Bước 4: Xóa thư mục cấu hình cloudflared ---{RESET}")
+    cloudflared_dir = os.path.expanduser("~/.cloudflared")
+    if os.path.exists(cloudflared_dir):
+        subprocess.run(f"rm -rf '{cloudflared_dir}'", shell=True)
+        print(f"{FG_GREEN}✓ Đã xóa thư mục {cloudflared_dir}.{RESET}")
+    else:
+        print(f"{FG_YELLOW}Thư mục {cloudflared_dir} không tồn tại.{RESET}")
+
+    etc_cloudflared = "/etc/cloudflared"
+    etc_proc = subprocess.run(
+        f"test -d '{etc_cloudflared}' && sudo rm -rf '{etc_cloudflared}' && echo 'ok' || true",
+        shell=True, capture_output=True, text=True
+    )
+    if "ok" in etc_proc.stdout:
+        print(f"{FG_GREEN}✓ Đã xóa thư mục {etc_cloudflared}.{RESET}")
+    else:
+        print(f"{FG_YELLOW}Thư mục {etc_cloudflared} không tồn tại.{RESET}")
+
+    # Bước 5: Gỡ package cloudflared
+    print(f"\n{FG_CYAN}--- Bước 5: Gỡ package cloudflared ---{RESET}")
+    subprocess.run(
+        "sudo apt remove -y cloudflared 2>/dev/null || sudo dpkg -r cloudflared 2>/dev/null || true",
+        shell=True
+    )
+    print(f"{FG_GREEN}✓ Đã thử gỡ package cloudflared (nếu cài qua apt/dpkg).{RESET}")
+
+    # Cập nhật dependency status trong settings
+    update_dependency_status("cloudflared", False)
+
+    print(f"\n{FG_GREEN}=== Hoàn thành! Đã xóa cloudflared và các service liên quan trên server. ==={RESET}")
+    print(f"{DIM}Tunnel và DNS records trên Cloudflare dashboard vẫn còn nguyên.{RESET}")
 
 
 def detect_ubuntu_codename() -> str:
@@ -1188,6 +1286,7 @@ def print_menu(detected: str) -> None:
     print(f"  {FG_CYAN}5{RESET}) Tạo Site mới cho Bench (bench new-site)")
     print(f"  {FG_CYAN}6{RESET}) Setup Cloudflare Tunnel (cloudflared + tạo tunnel + route DNS)")
     print(f"  {FG_CYAN}7{RESET}) Regenerate config + service cho Cloudflare Tunnel đã tồn tại")
+    print(f"  {FG_RED}8{RESET}) Xóa toàn bộ tunnel cloudflared và service systemctl liên quan")
     print(f"  {FG_CYAN}0{RESET}) Thoát")
 
 
@@ -1245,6 +1344,8 @@ def main() -> None:
             setup_cloudflare_tunnel()
         elif choice == "7":
             regenerate_cloudflare_config_for_existing_tunnel()
+        elif choice == "8":
+            remove_cloudflare_tunnels()
         elif choice == "0":
             print("Thoát Frappe setup menu.")
             break

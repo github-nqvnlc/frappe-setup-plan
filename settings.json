@@ -1,5 +1,5 @@
 {
-  "bench_name": "windify-hrms",
+  "bench_name": "lfdc",
   "node_version": "24",
   "python_version": "3.14",
   "nvm_version": "0.40.3",
@@ -8,7 +8,7 @@
   "mysql_root_username": "root",
   "admin_password": "admin",
   "sites": [
-    "cds.windify.net"
+    "lfdc.windify.net"
   ],
   "installed_dependencies": {
     "git": true,
