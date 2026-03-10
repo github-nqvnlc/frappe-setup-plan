@@ -1244,6 +1244,461 @@ def create_site() -> None:
         print(f"{FG_RED}Lỗi khi tạo site: {e}{RESET}")
 
 
+def stop_all_benches() -> None:
+    """
+    Dừng tất cả bench đang chạy trên server:
+    kill các process bench start, gunicorn, rq worker, node watch liên quan đến frappe.
+    """
+    print("\n=== DỪNG TẤT CẢ BENCH ĐANG CHẠY ===")
+
+    # Các pattern để tìm process liên quan đến bench/frappe
+    kill_patterns = [
+        "bench start",
+        "bench serve",
+        "honcho",
+        "Procfile",
+        "frappe.app",
+        "frappe worker",
+        "frappe schedule",
+        "rq worker",
+        "gunicorn.*frappe",
+        "node.*watch",
+        "socketio.*frappe",
+    ]
+
+    print(f"{DIM}Đang tìm các process bench/frappe đang chạy...{RESET}")
+
+    # Tìm tất cả PID khớp với các pattern
+    found_pids: dict[str, list[str]] = {}  # pattern -> list of PIDs
+    for pattern in kill_patterns:
+        result = subprocess.run(
+            f"pgrep -f {repr(pattern)} 2>/dev/null",
+            shell=True, capture_output=True, text=True
+        )
+        pids = [p.strip() for p in result.stdout.splitlines() if p.strip()]
+        # Loại PID của chính script này
+        my_pid = str(os.getpid())
+        pids = [p for p in pids if p != my_pid]
+        if pids:
+            found_pids[pattern] = pids
+
+    if not found_pids:
+        print(f"{FG_YELLOW}Không tìm thấy process bench/frappe nào đang chạy.{RESET}")
+        return
+
+    # Hiển thị danh sách process tìm thấy với thông tin chi tiết
+    all_pids: set[str] = set()
+    print(f"\n{BOLD}Các process sẽ bị dừng:{RESET}")
+    for pattern, pids in found_pids.items():
+        for pid in pids:
+            # Lấy command line của process
+            cmd_result = subprocess.run(
+                f"ps -p {pid} -o pid=,cmd= 2>/dev/null",
+                shell=True, capture_output=True, text=True
+            )
+            cmd_info = cmd_result.stdout.strip() or f"{pid} (không đọc được)"
+            print(f"  {FG_YELLOW}[{pattern}]{RESET} {DIM}{cmd_info}{RESET}")
+            all_pids.add(pid)
+
+    print(f"\nTổng cộng: {FG_CYAN}{len(all_pids)}{RESET} process(es)")
+
+    if not confirm(f"Tiếp tục dừng {len(all_pids)} process bench/frappe trên?"):
+        print("Huỷ thao tác dừng bench.")
+        return
+
+    # Gửi SIGTERM trước để graceful shutdown
+    print(f"\n{FG_CYAN}--- Gửi SIGTERM (graceful stop)... ---{RESET}")
+    for pid in all_pids:
+        subprocess.run(f"kill -TERM {pid} 2>/dev/null || true", shell=True)
+    print(f"{DIM}Đợi 3 giây để process kịp tắt...{RESET}")
+    import time
+    time.sleep(3)
+
+    # Kiểm tra process nào vẫn còn sống → SIGKILL
+    still_alive = []
+    for pid in all_pids:
+        check = subprocess.run(
+            f"ps -p {pid} 2>/dev/null | grep -q {pid} && echo alive || true",
+            shell=True, capture_output=True, text=True
+        )
+        if "alive" in check.stdout:
+            still_alive.append(pid)
+
+    if still_alive:
+        print(f"{FG_YELLOW}{len(still_alive)} process vẫn còn chạy, gửi SIGKILL...{RESET}")
+        for pid in still_alive:
+            subprocess.run(f"kill -KILL {pid} 2>/dev/null || true", shell=True)
+        print(f"{FG_GREEN}✓ Đã kill {len(still_alive)} process bằng SIGKILL.{RESET}")
+    else:
+        print(f"{FG_GREEN}✓ Tất cả process đã dừng sau SIGTERM.{RESET}")
+
+    # Kiểm tra lần cuối
+    remaining = []
+    for pid in all_pids:
+        check = subprocess.run(
+            f"ps -p {pid} 2>/dev/null | grep -q {pid} && echo alive || true",
+            shell=True, capture_output=True, text=True
+        )
+        if "alive" in check.stdout:
+            remaining.append(pid)
+
+    if remaining:
+        print(f"{FG_RED}⚠ Vẫn còn {len(remaining)} process chưa dừng được: {', '.join(remaining)}{RESET}")
+        print(f"{FG_YELLOW}Thử dùng: sudo kill -KILL {' '.join(remaining)}{RESET}")
+    else:
+        print(f"\n{FG_GREEN}=== Hoàn thành! Đã dừng tất cả bench/frappe đang chạy. ==={RESET}")
+
+
+def remove_bench_services() -> None:
+    """
+    Xóa các service systemctl liên quan đến bench (frappe-bench-web, worker, schedule, v.v.).
+    Dừng, disable và xóa file .service khỏi /etc/systemd/system/.
+    """
+    print("\n=== XÓA SERVICE SYSTEMCTL CỦA BENCH ===")
+    print(
+        "Script sẽ tìm tất cả service .service trong systemd có tên chứa:\n"
+        "  frappe-bench-*, bench-*, *-bench-web, *-bench-worker*, *-bench-schedule*\n"
+        "Các bước thực hiện:\n"
+        "- Liệt kê và hiển thị tất cả service tìm được.\n"
+        "- Dừng (stop) và vô hiệu hóa (disable) từng service.\n"
+        "- Xóa file .service khỏi /etc/systemd/system/.\n"
+        "- Chạy systemctl daemon-reload.\n"
+        "LƯU Ý: Các service supervisor (nếu dùng bench production) sẽ được xử lý riêng bạo."
+    )
+
+    # Bước 1: Tìm tất cả service liên quan bench trong systemd
+    print(f"\n{FG_CYAN}--- Bước 1: Tìm service bench trong systemd ---{RESET}")
+
+    # Pattern tìm kiếm trong systemd unit files
+    search_patterns = [
+        "frappe-bench-*",
+        "bench-*",
+        "*-bench-web*",
+        "*-bench-worker*",
+        "*-bench-schedule*",
+        "*-bench-socketio*",
+        "*-bench-redis*",
+    ]
+
+    found_services: list[str] = []
+    for pat in search_patterns:
+        result = subprocess.run(
+            f"systemctl list-unit-files '{pat}' --no-legend --plain 2>/dev/null | awk '{{print $1}}'",
+            shell=True, capture_output=True, text=True
+        )
+        for line in result.stdout.splitlines():
+            svc = line.strip()
+            if svc and svc not in found_services:
+                found_services.append(svc)
+
+    # Cũng quét trực tiếp trong /etc/systemd/system/ để không bỏ sót
+    find_result = subprocess.run(
+        "find /etc/systemd/system/ -maxdepth 1 -name '*.service' 2>/dev/null",
+        shell=True, capture_output=True, text=True
+    )
+    bench_keywords = ["frappe", "bench", "worker", "schedule", "honcho"]
+    for line in find_result.stdout.splitlines():
+        filepath = line.strip()
+        if not filepath:
+            continue
+        basename = os.path.basename(filepath)
+        # Đọc nội dung file để xác định có liên quan bench không
+        try:
+            with open(filepath, encoding="utf-8") as f:
+                content = f.read().lower()
+        except OSError:
+            content = ""
+        if any(kw in basename.lower() or kw in content for kw in bench_keywords):
+            if basename not in found_services:
+                found_services.append(basename)
+
+    if not found_services:
+        print(f"{FG_YELLOW}Không tìm thấy service systemctl nào liên quan đến bench.{RESET}")
+        _check_supervisor_bench()
+        return
+
+    # Hiển thị danh sách
+    print(f"Tìm thấy {FG_CYAN}{len(found_services)}{RESET} service(s):")
+    for svc in found_services:
+        # Lấy trạng thái hiện tại
+        status_proc = subprocess.run(
+            f"systemctl is-active '{svc}' 2>/dev/null",
+            shell=True, capture_output=True, text=True
+        )
+        status = status_proc.stdout.strip() or "unknown"
+        color = FG_GREEN if status == "active" else FG_YELLOW
+        print(f"  {color}[{status}]{RESET} {svc}")
+
+    if not confirm(f"Tiếp tục dừng, disable và xóa {len(found_services)} service trên?"):
+        print("Huỷ thao tác xóa service bench.")
+        return
+
+    # Bước 2: Stop + disable từng service
+    print(f"\n{FG_CYAN}--- Bước 2: Dừng và disable service ---{RESET}")
+    for svc in found_services:
+        print(f"{DIM}  stop {svc}{RESET}")
+        subprocess.run(f"sudo systemctl stop '{svc}' 2>/dev/null || true", shell=True)
+        print(f"{DIM}  disable {svc}{RESET}")
+        subprocess.run(f"sudo systemctl disable '{svc}' 2>/dev/null || true", shell=True)
+    print(f"{FG_GREEN}✓ Đã dừng và disable tất cả.{RESET}")
+
+    # Bước 3: Xóa file .service
+    print(f"\n{FG_CYAN}--- Bước 3: Xóa file .service ---{RESET}")
+    deleted = 0
+    for svc in found_services:
+        path = f"/etc/systemd/system/{svc}"
+        if os.path.exists(path):
+            subprocess.run(f"sudo rm -f '{path}'", shell=True)
+            print(f"{FG_GREEN}  ✓ Đã xóa: {path}{RESET}")
+            deleted += 1
+        else:
+            print(f"{FG_YELLOW}  - Không tìm thấy file: {path}{RESET}")
+    print(f"{FG_GREEN}✓ Đã xóa {deleted}/{len(found_services)} file service.{RESET}")
+
+    # Bước 4: daemon-reload
+    print(f"\n{FG_CYAN}--- Bước 4: Reload systemd daemon ---{RESET}")
+    subprocess.run("sudo systemctl daemon-reload", shell=True)
+    print(f"{FG_GREEN}✓ systemctl daemon-reload xong.{RESET}")
+
+    # Kiểm tra và thông báo supervisor
+    _check_supervisor_bench()
+
+    print(f"\n{FG_GREEN}=== Hoàn thành! Đã xóa các service systemctl của bench. ==={RESET}")
+
+
+def _check_supervisor_bench() -> None:
+    """Kiểm tra và gợi ý xử lý các service bench chạy qua supervisord."""
+    # Bench production có thể dùng supervisor thay cho systemd
+    supervisor_conf_dirs = [
+        "/etc/supervisor/conf.d",
+        "/etc/supervisor.d",
+        "/etc/supervisord.d",
+    ]
+    bench_conf_files = []
+    for conf_dir in supervisor_conf_dirs:
+        if not os.path.isdir(conf_dir):
+            continue
+        find_proc = subprocess.run(
+            f"find '{conf_dir}' -name '*bench*' -o -name '*frappe*' 2>/dev/null",
+            shell=True, capture_output=True, text=True
+        )
+        for line in find_proc.stdout.splitlines():
+            if line.strip():
+                bench_conf_files.append(line.strip())
+
+    if bench_conf_files:
+        print(f"\n{FG_YELLOW}Phát hiện cấu hình bench trong supervisord:{RESET}")
+        for cf in bench_conf_files:
+            print(f"  {DIM}{cf}{RESET}")
+        print(f"{FG_YELLOW}Nếu muốn xóa luôn, chạy thủ công:{RESET}")
+        print(f"  sudo supervisorctl stop all")
+        print(f"  sudo rm -f {' '.join(bench_conf_files)}")
+        print(f"  sudo supervisorctl reread && sudo supervisorctl update")
+
+
+def create_bench_start_service() -> None:
+    """
+    Tạo service systemctl tự động chạy 'bench start' sau khi server reboot.
+    Nếu service đã tồn tại sẽ xóa và tạo lại.
+    """
+    print("\n=== TẠO SERVICE SYSTEMCTL TỰ ĐỘNG CHẠY BENCH START ===")
+
+    settings = load_settings()
+    bench_name = settings.get("bench_name", "my-bench")
+    frappe_dir = os.path.expanduser(settings.get("frappe_dir", "~/frappe"))
+
+    # Hỏi thông tin cần thiết
+    default_bench_name = bench_name
+    bench_name_input = input(
+        f"{FG_YELLOW}Nhập tên bench (Enter để dùng '{default_bench_name}'): {RESET}"
+    ).strip()
+    bench_name = bench_name_input if bench_name_input else default_bench_name
+
+    bench_path = os.path.join(frappe_dir, bench_name)
+    if not os.path.exists(bench_path):
+        print(f"{FG_RED}Bench '{bench_name}' không tồn tại tại {bench_path}{RESET}")
+        print(f"{FG_YELLOW}Vui lòng chạy Setup FULL trước để tạo bench.{RESET}")
+        return
+
+    # Tên service
+    service_name = f"bench-start-{bench_name}.service"
+    service_path = f"/etc/systemd/system/{service_name}"
+    current_user = os.environ.get("USER") or os.environ.get("LOGNAME") or subprocess.run(
+        "whoami", shell=True, capture_output=True, text=True
+    ).stdout.strip()
+    home_dir = os.path.expanduser("~")
+    nvm_dir = os.path.join(home_dir, ".nvm")
+    local_bin = os.path.join(home_dir, ".local", "bin")
+
+    print(f"\n{BOLD}Thông tin service sẽ tạo:{RESET}")
+    print(f"  Tên service : {FG_CYAN}{service_name}{RESET}")
+    print(f"  Bench path  : {FG_CYAN}{bench_path}{RESET}")
+    print(f"  Chạy bằng user: {FG_CYAN}{current_user}{RESET}")
+    print(f"  File service: {FG_CYAN}{service_path}{RESET}")
+
+    # Kiểm tra service đã tồn tại
+    if os.path.exists(service_path):
+        print(f"\n{FG_YELLOW}Service '{service_name}' đã tồn tại. Sẽ xóa và tạo lại.{RESET}")
+        print(f"{DIM}Dừng và disable service cũ...{RESET}")
+        subprocess.run(f"sudo systemctl stop '{service_name}' 2>/dev/null || true", shell=True)
+        subprocess.run(f"sudo systemctl disable '{service_name}' 2>/dev/null || true", shell=True)
+        subprocess.run(f"sudo rm -f '{service_path}'", shell=True)
+        subprocess.run("sudo systemctl daemon-reload", shell=True)
+        print(f"{FG_GREEN}✓ Đã xóa service cũ.{RESET}")
+
+    if not confirm(f"Tiếp tục tạo service '{service_name}'?"):
+        print("Huỷ tạo service.")
+        return
+
+    # Nội dung file .service
+    # Dùng ExecStart với bash -lc để đảm bảo NVM và PATH được load đúng
+    service_content = (
+        "[Unit]\n"
+        f"Description=Frappe Bench Start ({bench_name})\n"
+        "After=network-online.target mariadb.service redis-server.service\n"
+        "Wants=network-online.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"User={current_user}\n"
+        f"WorkingDirectory={bench_path}\n"
+        "Environment=HOME=" + home_dir + "\n"
+        f"Environment=NVM_DIR={nvm_dir}\n"
+        f"Environment=PATH={nvm_dir}/versions/node/$(ls {nvm_dir}/versions/node/ 2>/dev/null | sort -V | tail -1)/bin:{local_bin}:/usr/local/bin:/usr/bin:/bin\n"
+        f"ExecStart=/bin/bash -lc 'source {nvm_dir}/nvm.sh 2>/dev/null || true; "
+        f"export PATH={local_bin}:$PATH; "
+        f"cd {bench_path} && bench start'\n"
+        "Restart=on-failure\n"
+        "RestartSec=10s\n"
+        "StandardOutput=journal\n"
+        "StandardError=journal\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+    )
+
+    # Ghi file tạm rồi sudo mv
+    tmp_path = f"/tmp/{service_name}"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(service_content)
+    except OSError as e:
+        print(f"{FG_RED}Không thể ghi file tạm: {e}{RESET}")
+        return
+
+    cmds = [
+        f"sudo mv '{tmp_path}' '{service_path}'",
+        f"sudo chown root:root '{service_path}'",
+        f"sudo chmod 644 '{service_path}'",
+        "sudo systemctl daemon-reload",
+        f"sudo systemctl enable '{service_name}'",
+        f"sudo systemctl start '{service_name}'",
+    ]
+    print(f"\n{FG_CYAN}--- Tạo và khởi động service ---{RESET}")
+    run_commands(cmds)
+
+    # Kiểm tra trạng thái sau khi khởi động
+    import time
+    time.sleep(2)
+    status_proc = subprocess.run(
+        f"systemctl is-active '{service_name}' 2>/dev/null",
+        shell=True, capture_output=True, text=True
+    )
+    status = status_proc.stdout.strip()
+    if status == "active":
+        print(f"\n{FG_GREEN}✓ Service '{service_name}' đang chạy (active).{RESET}")
+    else:
+        print(f"\n{FG_YELLOW}⚠ Service '{service_name}' trạng thái: {status}{RESET}")
+        print(f"{DIM}Kiểm tra log: sudo journalctl -u {service_name} -n 30{RESET}")
+
+    print(f"\n{FG_GREEN}=== Hoàn thành! Service sẽ tự động chạy 'bench start' sau mỗi lần reboot. ==={RESET}")
+    print(f"{DIM}Quản lý service:{RESET}")
+    print(f"  Kiểm tra trạng thái : {FG_CYAN}sudo systemctl status {service_name}{RESET}")
+    print(f"  Xem log           : {FG_CYAN}sudo journalctl -u {service_name} -f{RESET}")
+    print(f"  Dừng             : {FG_CYAN}sudo systemctl stop {service_name}{RESET}")
+    print(f"  Xóa (menu 12)     : {FG_CYAN}chạy menu này và chọn option 12{RESET}")
+
+    # Lưu tên service vào settings để menu 12 dùng lại
+    settings["bench_start_service"] = service_name
+    settings["bench_name"] = bench_name
+    save_settings(settings)
+
+
+def remove_bench_start_service() -> None:
+    """
+    Xóa service systemctl 'bench-start-<bench_name>.service' đã tạo bằng menu 11.
+    """
+    print("\n=== XÓA SERVICE TỰ ĐỘNG BENCH START ===")
+
+    settings = load_settings()
+    # Ưu tiên lấy tên service đã lưu trong settings
+    saved_service = settings.get("bench_start_service", "")
+    bench_name = settings.get("bench_name", "my-bench")
+    default_service = saved_service or f"bench-start-{bench_name}.service"
+
+    service_input = input(
+        f"{FG_YELLOW}Nhập tên service cần xóa (Enter để dùng '{default_service}'): {RESET}"
+    ).strip()
+    service_name = service_input if service_input else default_service
+    service_path = f"/etc/systemd/system/{service_name}"
+
+    # Kiểm tra service có tồn tại không
+    if not os.path.exists(service_path):
+        # Tìm các service bench-start-* hiện có
+        find_proc = subprocess.run(
+            "find /etc/systemd/system/ -maxdepth 1 -name 'bench-start-*.service' 2>/dev/null",
+            shell=True, capture_output=True, text=True
+        )
+        existing = [os.path.basename(f) for f in find_proc.stdout.splitlines() if f.strip()]
+        if existing:
+            print(f"{FG_YELLOW}Service '{service_name}' không tìm thấy.{RESET}")
+            print(f"Các service bench-start-* hiện có:")
+            for svc in existing:
+                print(f"  {FG_CYAN}{svc}{RESET}")
+            service_input2 = input(
+                f"{FG_YELLOW}Nhập tên service cần xóa (hoặc Enter để hủy): {RESET}"
+            ).strip()
+            if not service_input2:
+                print("Huỷ thao tác.")
+                return
+            service_name = service_input2
+            service_path = f"/etc/systemd/system/{service_name}"
+        else:
+            print(f"{FG_YELLOW}Không tìm thấy service bench-start-* nào trong /etc/systemd/system/.{RESET}")
+            return
+
+    # Hiển thị trạng thái hiện tại
+    status_proc = subprocess.run(
+        f"systemctl is-active '{service_name}' 2>/dev/null",
+        shell=True, capture_output=True, text=True
+    )
+    status = status_proc.stdout.strip() or "unknown"
+    color = FG_GREEN if status == "active" else FG_YELLOW
+    print(f"\nService: {FG_CYAN}{service_name}{RESET}  Trạng thái: {color}{status}{RESET}")
+    print(f"File   : {service_path}")
+
+    if not confirm(f"Tiếp tục dừng, disable và xóa service '{service_name}'?"):
+        print("Huỷ thao tác.")
+        return
+
+    cmds_remove = [
+        f"sudo systemctl stop '{service_name}' 2>/dev/null || true",
+        f"sudo systemctl disable '{service_name}' 2>/dev/null || true",
+        f"sudo rm -f '{service_path}'",
+        "sudo systemctl daemon-reload",
+    ]
+    for cmd in cmds_remove:
+        print(f"{DIM}  {cmd}{RESET}")
+        subprocess.run(cmd, shell=True)
+
+    # Xóa khỏi settings
+    if settings.get("bench_start_service") == service_name:
+        settings.pop("bench_start_service", None)
+        save_settings(settings)
+
+    print(f"\n{FG_GREEN}=== Hoàn thành! Đã xóa service '{service_name}'. ==={RESET}")
+
+
 def detect_platform() -> str:
     system = platform.system().lower()
     if system == "darwin":
@@ -1287,6 +1742,10 @@ def print_menu(detected: str) -> None:
     print(f"  {FG_CYAN}6{RESET}) Setup Cloudflare Tunnel (cloudflared + tạo tunnel + route DNS)")
     print(f"  {FG_CYAN}7{RESET}) Regenerate config + service cho Cloudflare Tunnel đã tồn tại")
     print(f"  {FG_RED}8{RESET}) Xóa toàn bộ tunnel cloudflared và service systemctl liên quan")
+    print(f"  {FG_YELLOW}9{RESET}) Dừng tất cả bench đang chạy (bench start / worker / gunicorn)")
+    print(f"  {FG_RED}10{RESET}) Xóa service systemctl của bench (frappe-bench-web, worker, schedule...)") 
+    print(f"  {FG_CYAN}11{RESET}) Tạo service tự động 'bench start' sau reboot (tạo lại nếu đã tồn tại)")
+    print(f"  {FG_RED}12{RESET}) Xóa service tự động bench start")
     print(f"  {FG_CYAN}0{RESET}) Thoát")
 
 
@@ -1346,6 +1805,14 @@ def main() -> None:
             regenerate_cloudflare_config_for_existing_tunnel()
         elif choice == "8":
             remove_cloudflare_tunnels()
+        elif choice == "9":
+            stop_all_benches()
+        elif choice == "10":
+            remove_bench_services()
+        elif choice == "11":
+            create_bench_start_service()
+        elif choice == "12":
+            remove_bench_start_service()
         elif choice == "0":
             print("Thoát Frappe setup menu.")
             break
