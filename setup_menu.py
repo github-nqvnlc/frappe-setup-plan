@@ -1924,9 +1924,9 @@ def print_menu(detected: str) -> None:
     
     print(f"\n{BOLD}Chọn tác vụ:{RESET}")
     print(f"  {FG_CYAN}1{RESET}) Setup FULL cho {detected} (hệ thống + môi trường + Bench/source Frappe)")
-    print(f"  {FG_CYAN}2{RESET}) Kiểm tra môi trường (các tool đã cài đặt)")
+    print(f"  {FG_GREEN}2{RESET}) Kiểm tra môi trường (các tool đã cài đặt)")
     print(f"  {FG_CYAN}3{RESET}) Chỉ cài wkhtmltopdf từ file .deb local")
-    print(f"  {FG_CYAN}4{RESET}) RESET / gỡ toàn bộ dependency Frappe đã cài")
+    print(f"  {FG_RED}4{RESET}) RESET / gỡ toàn bộ dependency Frappe đã cài")
     print(f"  {FG_CYAN}5{RESET}) Tạo Site mới cho Bench (bench new-site)")
     print(f"  {FG_CYAN}6{RESET}) Setup Cloudflare Tunnel (cloudflared + tạo tunnel + route DNS)")
     print(f"  {FG_CYAN}7{RESET}) Regenerate config + service cho Cloudflare Tunnel đã tồn tại")
@@ -1935,7 +1935,7 @@ def print_menu(detected: str) -> None:
     print(f"  {FG_RED}10{RESET}) Xóa service systemctl của bench (frappe-bench-web, worker, schedule...)") 
     print(f"  {FG_CYAN}11{RESET}) Tạo service tự động 'bench start' sau reboot (tạo lại nếu đã tồn tại)")
     print(f"  {FG_RED}12{RESET}) Xóa service tự động bench start")
-    print(f"  {FG_CYAN}13{RESET}) Kiểm tra trạng thái Cloudflare Tunnel")
+    print(f"  {FG_GREEN}13{RESET}) Kiểm tra trạng thái Cloudflare Tunnel")
     print(f"  {FG_CYAN}0{RESET}) Thoát")
 
 
