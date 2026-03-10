@@ -1,302 +1,198 @@
-## Frappe Setup Server – `setup_menu.py`
+# Frappe Setup Server – `setup_menu.py`
 
-### 1. Purpose
+## 1. Purpose
 
-This project provides a Python script (`setup_menu.py`) with an interactive menu to automate:
+`setup_menu.py` is an interactive Python menu that automates the full lifecycle of a Frappe/Bench server:
 
-- System setup for Frappe/Bench on Debian/Ubuntu and macOS.
-- Installation of the Bench CLI (`frappe-bench`) and initialization of a bench workspace.
-- Creation of Frappe sites with custom names.
-- Environment health checks (installed tools and their versions).
-- Installing wkhtmltopdf from local `.deb` files.
-- Resetting/removing all Frappe-related dependencies.
-- Basic Cloudflare Tunnel setup.
+- System setup on Debian/Ubuntu and macOS.
+- Bench CLI installation and workspace initialisation.
+- Frappe site creation.
+- Environment health checks.
+- wkhtmltopdf installation from local `.deb` files.
+- Full dependency reset/removal.
+- Cloudflare Tunnel setup, status checking, and cleanup.
+- Bench process management (stop all, create/remove auto-start services).
 
-All configuration and state are stored in `settings.json`, so the script can be run multiple times while remembering your bench name, MySQL password, created sites, and dependency status.
+All state is persisted in `settings.json` so the script is safely re-entrant.
 
 ---
 
-### 2. Project structure
+## 2. Project structure
 
 ```text
-frappe-setup-server/
-  ├─ setup_menu.py         # Main Python script (interactive menu)
-  ├─ settings.json         # Configuration & installation state
-  ├─ wkhtmltox/            # wkhtmltopdf .deb files (jammy/focal)
-  ├─ install-debian-ubuntu.md
-  ├─ install-macos.md
-  ├─ bench-setup.md
+frappe-setup-plan/
+  ├─ setup_menu.py         # Main menu script
+  ├─ settings.json         # Config & installation state
+  ├─ wkhtmltox/            # wkhtmltopdf .deb files (jammy / focal)
+  ├─ README.md             # This file (English)
+  ├─ README_VI.md          # Vietnamese version
   └─ ...
 ```
 
 ---
 
-### 3. Requirements
+## 3. Requirements
 
-- Debian/Ubuntu (tested in WSL2) or macOS.
-- `sudo` privileges (for installing packages and configuring MariaDB).
-- Python 3 (`python3` executable).
-- Internet access to install dependencies (apt, curl, uv, nvm, etc.).
+- Debian/Ubuntu (incl. WSL2) or macOS.
+- `sudo` privileges.
+- Python 3.
+- Internet access for apt, curl, nvm, uv, etc.
 
 ---
 
-### 4. `settings.json` – configuration
-
-Example:
+## 4. `settings.json`
 
 ```json
 {
-  "bench_name": "windify-hrms",
+  "bench_name": "my-bench",
   "node_version": "24",
   "python_version": "3.14",
   "nvm_version": "0.40.3",
-  "auto_mode": true,
+  "auto_mode": false,
   "mysql_root_password": "your-root-password",
   "admin_password": "your-admin-password",
-  "sites": [
-    "demo.test"
-  ],
+  "sites": ["library.localhost"],
   "installed_dependencies": {
-    "git": true,
-    "node": false,
-    "npm": true,
-    "yarn": true,
-    "uv": true,
-    "python": true,
-    "bench": true,
-    "mariadb": true,
-    "mysql": true,
-    "redis-server": true,
-    "wkhtmltopdf": true,
-    "cloudflared": false
+    "git": true, "node": true, "npm": true, "yarn": true,
+    "uv": true, "python": true, "bench": true,
+    "mariadb": true, "mysql": true,
+    "redis-server": true, "wkhtmltopdf": true, "cloudflared": false
   },
   "platform": "linux",
-  "frappe_dir": "~/frappe"
+  "frappe_dir": "~/frappe",
+  "bench_start_service": "bench-start-my-bench.service"
 }
 ```
 
-Key fields:
-
-- **`bench_name`** – Name of the bench (workspace under `~/frappe/<bench_name>`).
-- **`mysql_root_password`** – MySQL root password used for `bench new-site`.
-- **`admin_password`** – Administrator password for the Frappe site.
-- **`sites`** – List of created site names.
-- **`installed_dependencies`** – Status flags updated by `check_environment()`.
-- **`platform`** – Detected platform (`linux` / `macos`).
-- **`frappe_dir`** – Base directory for benches (default `~/frappe`).
-- **`auto_mode`** – When `true`, most confirmations are skipped (auto “yes”).
+| Key | Description |
+|-----|-------------|
+| `bench_name` | Bench workspace under `~/frappe/<bench_name>` |
+| `mysql_root_password` | MySQL root password used by `bench new-site` |
+| `admin_password` | Frappe site administrator password |
+| `sites` | List of created site names |
+| `installed_dependencies` | Flags updated by `check_environment()` |
+| `platform` | Detected OS (`linux` / `macos`) |
+| `frappe_dir` | Base directory for benches (default `~/frappe`) |
+| `auto_mode` | Skip confirmations when `true` |
+| `bench_start_service` | Name of the auto-start systemd service (set by menu 11) |
 
 ---
 
-### 5. How to run
+## 5. How to run
 
-#### 5.1. Interactive menu
+### Interactive menu
 
 ```bash
-cd ~/frappe-setup-server
+cd ~/frappe-setup-plan
 python3 setup_menu.py
 ```
 
-You’ll see:
-
-- A status block for core dependencies.
-- Menu options:
-  1. Full setup for the detected platform  
-     (system + environment + Bench + Frappe source)
-  2. Check environment (installed tools and versions)
-  3. Install wkhtmltopdf from local `.deb` file
-  4. RESET / remove all Frappe-related dependencies
-  5. Create a new site for the current bench (`bench new-site`)
-  6. Setup Cloudflare Tunnel
-  0. Exit
-
-#### 5.2. Auto mode (non-interactive)
+### Auto mode (non-interactive)
 
 ```bash
-python3 setup_menu.py --auto
-# or
-python3 setup_menu.py -y
+python3 setup_menu.py --auto   # or -y
 ```
 
-In auto mode the script:
-
-- Detects the platform (`linux` / `macos`).
-- Runs the full setup for that platform.
-- Uses `auto_mode=true` in `settings.json`.
-- Uses `mysql_root_password` and `admin_password` from `settings.json` for `bench new-site`.
+Auto mode detects the platform, runs a full setup, and uses passwords from `settings.json`.
 
 ---
 
-### 6. Core functions
+## 6. Menu options
 
-#### 6.1. Platform setup
-
-- **`setup_macos(auto: bool = False)`**
-  - Installs Xcode CLI tools, Homebrew, wkhtmltopdf for macOS, git, redis, MariaDB, pkg-config, etc.
-  - Then calls `setup_common_node_python(auto)` and `setup_bench(auto)`.
-
-- **`setup_debian_ubuntu(auto: bool = False)`**
-  - Runs `apt update` and installs git, `redis-server`, `mariadb-server`, `mariadb-client`, `libmariadb-dev`, `build-essential`, `python3-dev`, wkhtmltopdf dependencies, etc.
-  - Calls `install_wkhtmltox_local(auto)` to install wkhtmltopdf from local `.deb` files if available.
-  - Then calls `setup_common_node_python(auto)` and `setup_bench(auto)`.
-
-#### 6.2. Node, Python, uv, Yarn
-
-- **`setup_common_node_python(auto: bool = False)`**
-  - Installs:
-    - `nvm` + NodeJS 24 + Yarn.
-    - `uv` and Python 3.14.
-  - After installation, calls **`ensure_local_bin_in_shell_rc()`** to append:
-
-    ```bash
-    export PATH="$HOME/.local/bin:$PATH"
-    ```
-
-    to `~/.bashrc` / `~/.zshrc` (idempotent).  
-    This ensures `~/.local/bin/bench` is on the `PATH` for **new shells** you open.
-
-> For the current terminal session you still need to run:
->
-> ```bash
-> export PATH="$HOME/.local/bin:$PATH"
-> # or
-> source ~/.bashrc
-> ```
-
-#### 6.3. Bench installation and initialization
-
-- **`get_bench_setup_commands(bench_name: str)`**
-  - Returns a list of shell commands to:
-    - Install `frappe-bench` via `uv tool install` (with `--force` if needed).
-    - Run `bench --version` to verify.
-    - Create `~/frappe`.
-    - Run `bench init <bench_name>` in `~/frappe`, with `nvm` loaded to make Node/Yarn available.
-
-- **`setup_bench(auto: bool = False, bench_name: str | None = None)`**
-  - Reads `bench_name` from `settings.json` or prompts the user.
-  - Runs the commands from `get_bench_setup_commands`.
-  - Calls `ensure_local_bin_in_shell_rc()` to ensure `~/.local/bin` is on PATH.
-  - Verifies that the bench directory exists and marks `bench` as installed.
-  - Optionally (depending on mode and confirmation) creates a new site immediately after bench init.
-
-#### 6.4. Site creation
-
-Both `setup_bench()` (post-init) and `create_site()` share the same flow:
-
-1. Read `mysql_root_password` and `admin_password` from `settings.json` (or prompt if missing).
-2. Call **`fix_mysql_root_authentication(mysql_root_pwd)`**:
-   - Attempts to set a password for `root@localhost`.
-   - Creates `root@'127.0.0.1'` and `root@'%'` with the same password and full privileges.
-   - Prints manual SQL commands if automatic fix fails.
-3. Run:
-
-   ```bash
-   bench new-site <site_name> \
-     --db-root-username root \
-     --db-root-password <mysql_root_password> \
-     --admin-password <admin_password> \
-     --mariadb-user-host-login-scope=localhost
-   ```
-
-4. On success:
-   - Append the site name to `settings["sites"]`.
-   - Print instructions:
-     - Add `127.0.0.1 <site_name>` to `/etc/hosts` if needed.
-     - Run `bench --site <site_name> add-to-hosts`.
-     - Access the site at `http://<site_name>:8000`.
-
-> Depending on your MariaDB configuration (e.g. `unix_socket` auth), you may still need to run the suggested SQL commands manually using `sudo mysql`.
-
-#### 6.5. Environment check
-
-- **`check_environment()`**
-  - Iterates over:
-    - `git`, `node`, `npm`, `yarn`, `uv`, `python`, `bench`, `mariadb`, `mysql`, `redis-server`, `wkhtmltopdf`.
-  - For each command:
-    - Runs `command -v <cmd>` and `<cmd> --version`.
-    - Prints location and version.
-    - Updates `installed_dependencies[cmd]` in `settings.json`.
-
-#### 6.6. Install wkhtmltopdf from local `.deb`
-
-- **`install_wkhtmltox_local(auto: bool = False)`**
-  - Detects the Ubuntu codename (`jammy`, `focal`, etc.).
-  - Selects the appropriate `.deb` from the `wkhtmltox/` directory.
-  - Installs using `sudo dpkg -i '<file>'`.
-  - Calls `check_command("wkhtmltopdf")` to verify.
-
-#### 6.7. Reset all Frappe dependencies
-
-- **`reset_dependencies()`**
-  - Removes:
-    - `~/.nvm`, uv binaries/data, `frappe-bench` (via `uv tool uninstall`).
-    - Workspace directory `~/frappe`.
-    - `cloudflared` and related systemd units/config.
-    - System packages: `wkhtmltox`, `wkhtmltopdf`, `redis-server`,
-      `mariadb-server`, `mariadb-client`, `libmariadb-dev`, `xvfb`, `libfontconfig`, etc.
-  - Runs `sudo apt autoremove -y`.
-  - Resets all `installed_dependencies` flags in `settings.json` (except `git`).
-
-#### 6.8. Cloudflare Tunnel
-
-- **`setup_cloudflare_tunnel()`**
-  - Downloads and installs `cloudflared` from the official `.deb` package.
-  - Optionally runs `cloudflared tunnel login`.
-  - Creates a tunnel and DNS route:
-    - `cloudflared tunnel create <tunnel_name>`
-    - `cloudflared tunnel route dns <tunnel_name> <hostname>`
-  - Prints a sample `config.yml` snippet to run the tunnel as a long-running service.
+| # | Description | Colour |
+|---|-------------|--------|
+| **1** | Full setup for detected platform (system + Node/Python + Bench + Frappe source) | cyan |
+| **2** | Check environment (installed tools & versions) | green |
+| **3** | Install wkhtmltopdf from local `.deb` file | cyan |
+| **4** | RESET – remove all Frappe dependencies | red |
+| **5** | Create a new Frappe site (`bench new-site`) | cyan |
+| **6** | Setup Cloudflare Tunnel (install + create tunnel + route DNS) | cyan |
+| **7** | Regenerate config + systemd service for an existing Cloudflare Tunnel | cyan |
+| **8** | Remove cloudflared and all related systemd services from this server | red |
+| **9** | Stop all running bench processes (bench start / workers / gunicorn) | yellow |
+| **10** | Remove bench systemd services (frappe-bench-web, worker, schedule…) | red |
+| **11** | Create auto-start systemd service for `bench start` after reboot | cyan |
+| **12** | Remove the auto-start bench start service | red |
+| **13** | Check Cloudflare Tunnel status | green |
+| **0** | Exit | cyan |
 
 ---
 
-### 7. Notes and troubleshooting
+## 7. Key functions
 
-- **Bench not found in PATH**
-  - The script installs `bench` into `~/.local/bin/bench`.
-  - It also appends `export PATH="$HOME/.local/bin:$PATH"` to `.bashrc` / `.zshrc` via `ensure_local_bin_in_shell_rc()`.
-  - For the current shell, run:
+### 7.1 Platform setup
 
-    ```bash
-    export PATH="$HOME/.local/bin:$PATH"
-    # or
-    source ~/.bashrc
-    ```
+| Function | Description |
+|----------|-------------|
+| `setup_macos(auto)` | Xcode CLI, Homebrew, wkhtmltopdf, git, redis, MariaDB → node/python → bench |
+| `setup_debian_ubuntu(auto)` | apt packages, wkhtmltopdf local deb, node/python → bench |
+| `setup_common_node_python(auto)` | nvm + Node 24 + Yarn, uv + Python 3.14, adds `~/.local/bin` to PATH |
+| `setup_bench(auto, bench_name)` | `uv tool install frappe-bench`, `bench init`, optionally creates a site |
 
-- **MySQL authentication errors (e.g. `(1698, "Access denied for user 'root'@'localhost'")`)**
-  - MariaDB may be using socket authentication for root.
-  - `fix_mysql_root_authentication()` tries to:
-    - Run `ALTER USER 'root'@'localhost' IDENTIFIED BY '<password>';`
-    - Create `root@'127.0.0.1'` and `root@'%'` with the same password.
-  - If the automatic fix fails, follow the printed SQL commands and run them manually with `sudo mysql`.
+### 7.2 Site creation
 
-- **Auto mode vs interactive**
-  - Auto mode is best used when:
-    - You have already filled `mysql_root_password` and `admin_password` in `settings.json`.
-    - You want to run a full setup without confirmations.
-  - Interactive mode is recommended the first time you run the script, so you can review each step.
+Both `setup_bench()` and `create_site()` share the same flow:
 
-If you extend `setup_menu.py` (add new menu items or platforms), keep `README.md` and `README_VI.md` in sync so both English and Vietnamese docs stay up to date.
+1. Read passwords from `settings.json` (prompt if missing).
+2. `fix_mysql_root_authentication()` – ensures `root@localhost`, `root@127.0.0.1`, `root@%` all have password auth.
+3. Run `bench new-site <name> --db-root-password ... --admin-password ...`
+4. Save site name to `settings["sites"]`.
 
-Frappe Setup Server
-===================
+### 7.3 Cloudflare Tunnel
 
-Tài liệu này tóm tắt và chuẩn hoá lại hướng dẫn cài đặt Frappe Framework từ trang chính thức [`https://docs.frappe.io/framework/user/en/installation`](https://docs.frappe.io/framework/user/en/installation).
+| Function | Menu | Description |
+|----------|------|-------------|
+| `setup_cloudflare_tunnel()` | 6 | Install cloudflared, login, create tunnel, route DNS, create systemd service |
+| `regenerate_cloudflare_config_and_service()` | 7 | Recreate `config.yml` + `.service` without touching the tunnel or DNS |
+| `remove_cloudflare_tunnels()` | 8 | Stop/disable/delete all cloudflared services, remove `~/.cloudflared`, uninstall package. **Does NOT delete tunnels on Cloudflare dashboard.** |
+| `check_cloudflare_status()` | 13 | Show binary version, service states, config.yml contents, tunnel list with connection info, DNS resolution test |
 
-Nội dung chính:
+### 7.4 Bench process & service management
 
-- **Yêu cầu hệ thống & phiên bản dependency** (MariaDB, Python, NodeJS, Redis/Valkey, Yarn, pip, wkhtmltopdf, cron).
-- **Chuẩn bị môi trường** cho:
-  - macOS.
-  - Debian / Ubuntu (bao gồm WSL trên Windows).
-- **Cài đặt dependency chung**: nvm, Node, Yarn, uv, Python.
-- **Cài đặt Bench CLI** và khởi tạo bench đầu tiên.
+| Function | Menu | Description |
+|----------|------|-------------|
+| `stop_all_benches()` | 9 | Find and kill all bench/frappe processes (SIGTERM → SIGKILL) |
+| `remove_bench_services()` | 10 | Stop, disable, and delete bench production systemd services; also checks supervisord |
+| `create_bench_start_service()` | 11 | Create `/etc/systemd/system/bench-start-<name>.service` that runs `bench start` on boot; recreates if already exists |
+| `remove_bench_start_service()` | 12 | Stop, disable, and delete the bench-start service |
 
-Các file liên quan:
+### 7.5 Utilities
 
-- `requirements.md`: Yêu cầu hệ thống & phiên bản dependency.
-- `install-macos.md`: Các bước cài đặt Frappe trên macOS.
-- `install-debian-ubuntu.md`: Các bước cài đặt Frappe trên Debian / Ubuntu (bao gồm WSL).
-- `bench-setup.md`: Các bước cài đặt Bench CLI, Python và NodeJS bằng uv & nvm.
+| Function | Description |
+|----------|-------------|
+| `check_environment()` | Check & version all dependencies, update `settings.json` |
+| `install_wkhtmltox_local(auto)` | Install wkhtmltopdf from `wkhtmltox/*.deb` |
+| `reset_dependencies()` | Full cleanup: nvm, uv, bench, ~/frappe, cloudflared, apt packages |
+| `ensure_local_bin_in_shell_rc()` | Idempotently add `~/.local/bin` to `~/.bashrc` / `~/.zshrc` |
 
-Tham khảo gốc: [`https://docs.frappe.io/framework/user/en/installation`](https://docs.frappe.io/framework/user/en/installation).
+---
 
+## 8. Troubleshooting
+
+**`bench` not found in PATH**
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+# or
+source ~/.bashrc
+```
+
+**MySQL Access denied for `root@localhost`**
+
+MariaDB may use socket auth. `fix_mysql_root_authentication()` runs:
+```sql
+ALTER USER 'root'@'localhost' IDENTIFIED BY '<password>';
+CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '<password>';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+```
+If it fails, run the printed SQL manually with `sudo mysql`.
+
+**bench start service not starting after reboot**
+```bash
+sudo journalctl -u bench-start-<bench_name>.service -n 50
+```
+NVM and `~/.local/bin` are sourced via `bash -lc` in the ExecStart so Node and bench should be found correctly.
+
+**Cloudflare Tunnel not connecting**
+
+Use menu **13** to check service status, config.yml, and DNS resolution in one shot.
