@@ -1888,6 +1888,411 @@ def check_cloudflare_status() -> None:
     print(f"{FG_GREEN}Kiểm tra xong.{RESET}")
 
 
+def add_cloudflare_ingress() -> None:
+    """
+    Thêm một hostname + service mới vào ingress rules trong ~/.cloudflared/config.yml.
+    Rule mới sẽ được chèn trước dòng catch-all 'service: http_status:404'.
+    Sau khi cập nhật config, tự động restart service cloudflared nếu đang chạy.
+    Đồng thời, tự động cấu hình DNS cho hostname mới qua tunnel.
+    """
+    print(f"\n{BOLD}=== THÊM HOSTNAME/SERVICE VÀO CLOUDFLARE TUNNEL CONFIG ==={RESET}")
+
+    config_path = os.path.expanduser("~/.cloudflared/config.yml")
+    if not os.path.exists(config_path):
+        print(f"{FG_RED}Không tìm thấy file config: {config_path}{RESET}")
+        print(f"{FG_YELLOW}Hãy chạy Setup Cloudflare Tunnel (menu 6) trước để tạo config.{RESET}")
+        return
+
+    # Đọc nội dung hiện tại
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            content = f.read()
+    except OSError as e:
+        print(f"{FG_RED}Không thể đọc file config: {e}{RESET}")
+        return
+
+    print(f"{DIM}--- Nội dung config.yml hiện tại ---{RESET}")
+    for line in content.splitlines():
+        print(f"  {DIM}{line}{RESET}")
+
+    # Nhập thông tin
+    hostname = input(f"\n{FG_YELLOW}Nhập hostname mới (vd: app2.example.com): {RESET}").strip()
+    local_port = input(f"{FG_YELLOW}Nhập port local (vd: 8001) hoặc URL đầy đủ: {RESET}").strip()
+
+    if not hostname or not local_port:
+        print(f"{FG_RED}Thiếu hostname hoặc port/service. Dừng thao tác.{RESET}")
+        return
+
+    # Nếu user nhập port number thì tự thêm http://localhost:
+    if local_port.isdigit():
+        service = f"http://localhost:{local_port}"
+    elif local_port.startswith(("http://", "https://")):
+        service = local_port
+    else:
+        service = f"http://localhost:{local_port}"
+
+    # Kiểm tra hostname đã tồn tại chưa
+    if f"hostname: {hostname}" in content:
+        print(f"{FG_YELLOW}Hostname '{hostname}' đã tồn tại trong config.yml.{RESET}")
+        if not confirm("Vẫn thêm rule trùng này vào?"):
+            print("Huỷ thao tác.")
+            return
+
+    print(f"\n{BOLD}Sẽ thêm rule:{RESET}")
+    print(f"  hostname: {FG_CYAN}{hostname}{RESET}")
+    print(f"  service : {FG_CYAN}{service}{RESET}")
+
+    if not confirm("Tiếp tục ghi vào config.yml?"):
+        print("Huỷ thao tác.")
+        return
+
+    # Chèn rule mới trước dòng catch-all '  - service: http_status:404'
+    new_rule = f"  - hostname: {hostname}\n    service: {service}\n"
+    catchall_marker = "  - service: http_status:404"
+
+    if catchall_marker in content:
+        new_content = content.replace(catchall_marker, new_rule + catchall_marker, 1)
+    else:
+        # Nếu không có catch-all, append vào cuối phần ingress
+        # Cần đảm bảo có dòng 'ingress:' nếu chưa có, nhưng thường config.yml đã có sẵn
+        if "ingress:" not in content:
+            new_content = content.rstrip() + "\ningress:\n" + new_rule + catchall_marker + "\n"
+        else:
+            new_content = content.rstrip() + "\n" + new_rule + catchall_marker + "\n"
+
+
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        print(f"{FG_GREEN}✓ Đã cập nhật {config_path}{RESET}")
+    except OSError as e:
+        print(f"{FG_RED}Không thể ghi file config: {e}{RESET}")
+        return
+
+    # Hiển thị nội dung sau khi cập nhật
+    print(f"\n{DIM}--- Nội dung config.yml sau khi cập nhật ---{RESET}")
+    for line in new_content.splitlines():
+        print(f"  {DIM}{line}{RESET}")
+
+    # Restart cloudflared service nếu đang chạy
+    print(f"\n{FG_CYAN}--- Kiểm tra và restart service cloudflared ---{RESET}")
+    svc_list_proc = subprocess.run(
+        "systemctl list-units 'cloudflared-*.service' --no-legend --plain 2>/dev/null | awk '{print $1}'",
+        shell=True, capture_output=True, text=True
+    )
+    running_svcs = [s.strip() for s in svc_list_proc.stdout.splitlines() if s.strip()]
+
+    if running_svcs:
+        for svc in running_svcs:
+            print(f"{DIM}  Restart: {svc}{RESET}")
+            r = subprocess.run(f"sudo systemctl restart '{svc}'", shell=True)
+            if r.returncode == 0:
+                print(f"{FG_GREEN}  ✓ Đã restart {svc}{RESET}")
+            else:
+                print(f"{FG_YELLOW}  ⚠ Không thể restart {svc}. Chạy thủ công: sudo systemctl restart {svc}{RESET}")
+    else:
+        print(f"{FG_YELLOW}Không tìm thấy service cloudflared đang chạy. Config đã lưu, tunnel sẽ đọc lúc khởi động tiếp theo.{RESET}")
+
+    # --- Cấu hình DNS cho hostname mới qua tunnel ---
+    print(f"\n{FG_CYAN}--- Cấu hình DNS cho hostname mới qua tunnel ---{RESET}")
+    tunnel_name = ""
+    # Parse new_content to find tunnel name
+    for line in new_content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("tunnel:"):
+            tunnel_name = stripped.split(":", 1)[1].strip()
+            break
+
+    if tunnel_name:
+        print(f"  Tìm thấy tunnel name: {FG_CYAN}{tunnel_name}{RESET}")
+        route_dns_cmd = ["cloudflared", "tunnel", "route", "dns", tunnel_name, hostname]
+        print(f"  {DIM}Chạy lệnh: {' '.join(route_dns_cmd)}{RESET}")
+        route_proc = subprocess.run(route_dns_cmd, capture_output=True, text=True)
+        if route_proc.returncode == 0:
+            print(f"  {FG_GREEN}✓ Đã cấu hình DNS cho '{hostname}' qua tunnel '{tunnel_name}'.{RESET}")
+        else:
+            print(f"  {FG_RED}✗ Không thể cấu hình DNS cho '{hostname}'.{RESET}")
+            print(f"  {DIM}Lỗi: {route_proc.stderr.strip()}{RESET}")
+            print(f"  {FG_YELLOW}Vui lòng kiểm tra lại tunnel name và hostname, hoặc cấu hình thủ công.{RESET}")
+    else:
+        print(f"  {FG_YELLOW}⚠ Không tìm thấy 'tunnel:' trong config.yml. Không thể tự động cấu hình DNS.{RESET}")
+        print(f"  {FG_YELLOW}Vui lòng cấu hình DNS thủ công trên Cloudflare Dashboard.{RESET}")
+
+    print(f"\n{FG_GREEN}=== Hoàn thành! Đã thêm rule '{hostname}' → '{service}' vào config. ==={RESET}")
+
+
+def remove_cloudflare_ingress() -> None:
+    """
+    Xóa một hostname khỏi ingress rules trong ~/.cloudflared/config.yml.
+    Liệt kê các hostname đang có, người dùng chọn hostname muốn xóa.
+    Sau khi cập nhật config, xóa DNS record trên Cloudflare qua API
+    và tự động restart service cloudflared nếu đang chạy.
+    """
+    print(f"\n{BOLD}=== XÓA HOSTNAME KHỎI CLOUDFLARE TUNNEL CONFIG ==={RESET}")
+
+    config_path = os.path.expanduser("~/.cloudflared/config.yml")
+    if not os.path.exists(config_path):
+        print(f"{FG_RED}Không tìm thấy file config: {config_path}{RESET}")
+        print(f"{FG_YELLOW}Hãy chạy Setup Cloudflare Tunnel (menu 6) trước để tạo config.{RESET}")
+        return
+
+    # Đọc nội dung hiện tại
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError as e:
+        print(f"{FG_RED}Không thể đọc file config: {e}{RESET}")
+        return
+
+    # Tìm tất cả hostname trong ingress
+    hostnames: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("hostname:"):
+            hn = stripped.split(":", 1)[1].strip()
+            if hn:
+                hostnames.append(hn)
+
+    if not hostnames:
+        print(f"{FG_YELLOW}Không tìm thấy hostname nào trong ingress rules của config.yml.{RESET}")
+        return
+
+    print(f"\n{BOLD}Danh sách hostname hiện có:{RESET}")
+    for idx, hn in enumerate(hostnames, 1):
+        print(f"  {FG_CYAN}{idx}{RESET}) {hn}")
+    print(f"  {FG_YELLOW}0{RESET}) Huỷ")
+
+    choice_str = input(f"\n{FG_YELLOW}Chọn hostname muốn xóa (1-{len(hostnames)}): {RESET}").strip()
+    if choice_str == "0" or not choice_str:
+        print("Huỷ thao tác.")
+        return
+
+    try:
+        idx = int(choice_str)
+        if not (1 <= idx <= len(hostnames)):
+            raise ValueError
+    except ValueError:
+        print(f"{FG_RED}Lựa chọn không hợp lệ.{RESET}")
+        return
+
+    target_hostname = hostnames[idx - 1]
+    print(f"\n{BOLD}Sẽ xóa rule cho hostname:{RESET} {FG_CYAN}{target_hostname}{RESET}")
+
+    if not confirm(f"Tiếp tục xóa hostname '{target_hostname}' khỏi config.yml và DNS Cloudflare?"):
+        print("Huỷ thao tác.")
+        return
+
+    # Lọc bỏ block ingress của hostname đó.
+    # Một rule ingress có dạng:
+    #   (optional blank/comment)
+    #   - hostname: <target>\n
+    #     service: <url>\n
+    # Ta xóa dòng '  - hostname: <target>' VÀ dòng '    service: ...' ngay sau nó.
+    new_lines: list[str] = []
+    skip_next = False
+    for line in lines:
+        stripped = line.strip()
+        if skip_next:
+            # Nếu dòng tiếp theo là dòng service của rule bị xóa, skip luôn
+            if stripped.startswith("service:"):
+                skip_next = False
+                continue
+            else:
+                # Không phải service → giữ lại, không skip nữa
+                skip_next = False
+                new_lines.append(line)
+            continue
+        # Kiểm tra dòng hostname
+        if stripped == f"- hostname: {target_hostname}":
+            skip_next = True   # skip dòng service tiếp theo
+            continue
+        new_lines.append(line)
+
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+        print(f"{FG_GREEN}✓ Đã xóa hostname '{target_hostname}' khỏi {config_path}{RESET}")
+    except OSError as e:
+        print(f"{FG_RED}Không thể ghi file config: {e}{RESET}")
+        return
+
+    # Hiển thị nội dung sau khi cập nhật
+    print(f"\n{DIM}--- Nội dung config.yml sau khi cập nhật ---{RESET}")
+    for line in new_lines:
+        print(f"  {DIM}{line.rstrip()}{RESET}")
+
+    # --- Xóa DNS record trên Cloudflare qua API ---
+    print(f"\n{FG_CYAN}--- Xóa DNS record trên Cloudflare ---{RESET}")
+    print(
+        f"{DIM}Để xóa DNS record, cần Cloudflare API Token có quyền Zone:DNS:Edit.{RESET}\n"
+        f"{DIM}Token sẽ được lưu vào settings.json để tái sử dụng.{RESET}"
+    )
+
+    settings = load_settings()
+    api_token = settings.get("cloudflare_api_token", "").strip()
+    if not api_token:
+        api_token = input(f"{FG_YELLOW}Nhập Cloudflare API Token (Enter để bỏ qua): {RESET}").strip()
+        if api_token:
+            settings["cloudflare_api_token"] = api_token
+            save_settings(settings)
+
+    if not api_token:
+        print(f"{FG_YELLOW}Bỏ qua xóa DNS. Xóa thủ công tại Cloudflare Dashboard nếu cần.{RESET}")
+    else:
+        _delete_cloudflare_dns(api_token, target_hostname)
+
+    # Restart cloudflared service nếu đang chạy
+    print(f"\n{FG_CYAN}--- Kiểm tra và restart service cloudflared ---{RESET}")
+    svc_list_proc = subprocess.run(
+        "systemctl list-units 'cloudflared-*.service' --no-legend --plain 2>/dev/null | awk '{print $1}'",
+        shell=True, capture_output=True, text=True
+    )
+    running_svcs = [s.strip() for s in svc_list_proc.stdout.splitlines() if s.strip()]
+
+    if running_svcs:
+        for svc in running_svcs:
+            print(f"{DIM}  Restart: {svc}{RESET}")
+            r = subprocess.run(f"sudo systemctl restart '{svc}'", shell=True)
+            if r.returncode == 0:
+                print(f"{FG_GREEN}  ✓ Đã restart {svc}{RESET}")
+            else:
+                print(f"{FG_YELLOW}  ⚠ Không thể restart {svc}. Chạy thủ công: sudo systemctl restart {svc}{RESET}")
+    else:
+        print(f"{FG_YELLOW}Không tìm thấy service cloudflared đang chạy. Config đã lưu.{RESET}")
+
+    print(f"\n{FG_GREEN}=== Hoàn thành! Đã xóa hostname '{target_hostname}' khỏi config. ==={RESET}")
+
+
+def _delete_cloudflare_dns(api_token: str, hostname: str) -> None:
+    """
+    Xóa DNS record (CNAME/A/AAAA) của hostname trên Cloudflare qua API.
+    hostname: tên đầy đủ, vd: app.example.com
+    """
+    import urllib.request
+    import urllib.error
+
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "Content-Type": "application/json",
+    }
+
+    def cf_request(method: str, path: str, body: bytes | None = None):
+        url = f"https://api.cloudflare.com/client/v4{path}"
+        req = urllib.request.Request(url, data=body, method=method)
+        for k, v in headers.items():
+            req.add_header(k, v)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            return json.loads(e.read())
+        except Exception as exc:
+            return {"success": False, "errors": [{"message": str(exc)}]}
+
+    # Bước 1: Tìm zone_id từ hostname (thử từ root domain ngược lên)
+    print(f"  {DIM}Đang tìm Zone cho hostname '{hostname}'...{RESET}")
+    parts = hostname.split(".")
+    zone_id = ""
+    zone_name = ""
+    # Thử ghép domain từ 2 phần cuối trở lên: example.com, sub.example.com, ...
+    for i in range(len(parts) - 1, 0, -1):
+        candidate = ".".join(parts[i:])
+        resp = cf_request("GET", f"/zones?name={candidate}&status=active")
+        if resp.get("success") and resp.get("result"):
+            zone_id = resp["result"][0]["id"]
+            zone_name = resp["result"][0]["name"]
+            break
+
+    if not zone_id:
+        print(f"  {FG_RED}✗ Không tìm thấy Zone cho '{hostname}' trong tài khoản Cloudflare.{RESET}")
+        print(f"  {FG_YELLOW}Kiểm tra lại API Token hoặc xóa DNS thủ công trên Cloudflare Dashboard.{RESET}")
+        return
+
+    print(f"  {FG_GREEN}✓ Zone: {zone_name} (id: {DIM}{zone_id}{RESET}{FG_GREEN}){RESET}")
+
+    # Bước 2: Tìm DNS record khớp với hostname
+    print(f"  {DIM}Đang tìm DNS record cho '{hostname}'...{RESET}")
+    resp = cf_request("GET", f"/zones/{zone_id}/dns_records?name={hostname}&per_page=50")
+    if not resp.get("success"):
+        errs = resp.get("errors", [])
+        print(f"  {FG_RED}✗ Lỗi khi tìm DNS record: {errs}{RESET}")
+        return
+
+    records = resp.get("result", [])
+    if not records:
+        print(f"  {FG_YELLOW}Không tìm thấy DNS record nào cho '{hostname}'. Có thể đã xóa trước đó.{RESET}")
+        return
+
+    # Bước 3: Xóa từng record tìm được
+    for rec in records:
+        rec_id = rec.get("id")
+        rec_type = rec.get("type", "?")
+        rec_content = rec.get("content", "?")
+        print(f"  {DIM}Xóa record: [{rec_type}] {hostname} → {rec_content}{RESET}")
+        del_resp = cf_request("DELETE", f"/zones/{zone_id}/dns_records/{rec_id}")
+        if del_resp.get("success"):
+            print(f"  {FG_GREEN}  ✓ Đã xóa DNS record [{rec_type}] {hostname}{RESET}")
+        else:
+            errs = del_resp.get("errors", [])
+            print(f"  {FG_RED}  ✗ Không thể xóa record: {errs}{RESET}")
+
+
+def restart_cloudflare_service() -> None:
+    """
+    Tìm và restart tất cả service cloudflared-*.service đang có trong systemd.
+    """
+    print(f"\n{BOLD}=== RESTART SERVICE CLOUDFLARE TUNNEL ==={RESET}")
+
+    # Tìm tất cả unit cloudflared-* (bao gồm cả không active)
+    list_proc = subprocess.run(
+        "systemctl list-unit-files 'cloudflared-*.service' --no-legend --plain 2>/dev/null | awk '{print $1}'",
+        shell=True, capture_output=True, text=True
+    )
+    svcs = [s.strip() for s in list_proc.stdout.splitlines() if s.strip()]
+
+    # Cũng thêm cloudflared.service nếu có
+    base_proc = subprocess.run(
+        "systemctl list-unit-files 'cloudflared.service' --no-legend --plain 2>/dev/null | awk '{print $1}'",
+        shell=True, capture_output=True, text=True
+    )
+    if base_proc.stdout.strip():
+        svcs.append("cloudflared.service")
+
+    if not svcs:
+        print(f"{FG_YELLOW}Không tìm thấy service cloudflared nào trong systemd.{RESET}")
+        print(f"{DIM}Hãy chạy Setup Cloudflare Tunnel (menu 6) để tạo service.{RESET}")
+        return
+
+    print(f"Tìm thấy {FG_CYAN}{len(svcs)}{RESET} service(s):")
+    for svc in svcs:
+        active_proc = subprocess.run(
+            f"systemctl is-active '{svc}' 2>/dev/null",
+            shell=True, capture_output=True, text=True
+        )
+        status = active_proc.stdout.strip() or "unknown"
+        color = FG_GREEN if status == "active" else FG_YELLOW
+        print(f"  {color}[{status}]{RESET} {svc}")
+
+    if not confirm(f"Restart {len(svcs)} service cloudflared trên?"):
+        print("Huỷ thao tác.")
+        return
+
+    all_ok = True
+    for svc in svcs:
+        print(f"\n{FG_CYAN}  Restart: {svc}{RESET}")
+        r = subprocess.run(f"sudo systemctl restart '{svc}'", shell=True)
+        if r.returncode == 0:
+            print(f"{FG_GREEN}  ✓ Đã restart {svc}{RESET}")
+        else:
+            print(f"{FG_RED}  ✗ Không thể restart {svc}{RESET}")
+            all_ok = False
+
+    if all_ok:
+        print(f"\n{FG_GREEN}=== Hoàn thành! Tất cả service cloudflared đã được restart. ==={RESET}")
+    else:
+        print(f"\n{FG_YELLOW}⚠ Một số service không restart được. Kiểm tra log: sudo journalctl -u <service> -n 30{RESET}")
+
+
 def detect_platform() -> str:
     system = platform.system().lower()
     if system == "darwin":
@@ -1936,6 +2341,9 @@ def print_menu(detected: str) -> None:
     print(f"  {FG_CYAN}11{RESET}) Tạo service tự động 'bench start' sau reboot (tạo lại nếu đã tồn tại)")
     print(f"  {FG_RED}12{RESET}) Xóa service tự động bench start")
     print(f"  {FG_GREEN}13{RESET}) Kiểm tra trạng thái Cloudflare Tunnel")
+    print(f"  {FG_CYAN}14{RESET}) Thêm hostname/service vào Cloudflare Tunnel config (config.yml)")
+    print(f"  {FG_RED}15{RESET}) Xóa hostname khỏi Cloudflare Tunnel config (config.yml)")
+    print(f"  {FG_CYAN}16{RESET}) Restart service Cloudflare Tunnel")
     print(f"  {FG_CYAN}0{RESET}) Thoát")
 
 
@@ -2005,6 +2413,12 @@ def main() -> None:
             remove_bench_start_service()
         elif choice == "13":
             check_cloudflare_status()
+        elif choice == "14":
+            add_cloudflare_ingress()
+        elif choice == "15":
+            remove_cloudflare_ingress()
+        elif choice == "16":
+            restart_cloudflare_service()
         elif choice == "0":
             print("Thoát Frappe setup menu.")
             break
