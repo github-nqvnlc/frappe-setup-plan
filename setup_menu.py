@@ -467,89 +467,42 @@ def setup_cloudflare_tunnel() -> None:
     else:
         print("Bỏ qua bước login, các lệnh tạo tunnel sau có thể sẽ thất bại nếu chưa login.")
 
+    cloudflared_dir = os.path.expanduser("~/.cloudflared")
+    config_path = get_next_cloudflared_config_path(cloudflared_dir)
+    effective_tunnel_name = get_tunnel_name_for_config_path(
+        requested_tunnel_name=tunnel_name,
+        config_path=config_path,
+    )
+    effective_tunnel_name = ensure_unique_cloudflare_tunnel_name(effective_tunnel_name)
+
+    if effective_tunnel_name != tunnel_name:
+        print(
+            f"{FG_YELLOW}Sẽ tạo tunnel riêng cho file config mới:{RESET} "
+            f"{effective_tunnel_name}"
+        )
+
     print("\n--- Tạo tunnel ---")
-    create_cmd = ["cloudflared", "tunnel", "create", tunnel_name]
+    create_cmd = ["cloudflared", "tunnel", "create", effective_tunnel_name]
     create_proc = subprocess.run(create_cmd, capture_output=True, text=True)
     if create_proc.returncode != 0:
-        msg = (create_proc.stderr or "") + "\n" + (create_proc.stdout or "")
-        msg_lower = msg.lower()
-        if "tunnel with name already exists" in msg_lower:
-            print(
-                f"{FG_YELLOW}Tunnel '{tunnel_name}' đã tồn tại. Sẽ xoá tunnel cũ và tạo lại.{RESET}"
-            )
-            delete_proc = subprocess.run(
-                ["cloudflared", "tunnel", "delete", tunnel_name],
-                capture_output=True,
-                text=True,
-            )
-            if delete_proc.returncode != 0:
-                msg = (delete_proc.stderr or "") + "\n" + (delete_proc.stdout or "")
-                msg_lower_del = msg.lower()
-
-                # Nếu Cloudflare báo còn active connections, thử cleanup rồi xoá lại
-                if "cannot delete tunnel because it has active connections" in msg_lower_del:
-                    print(f"{FG_YELLOW}Tunnel '{tunnel_name}' còn kết nối active. Đang chạy 'cloudflared tunnel cleanup {tunnel_name}' rồi xoá lại...{RESET}")
-                    cleanup_proc = subprocess.run(
-                        ["cloudflared", "tunnel", "cleanup", tunnel_name],
-                        capture_output=True,
-                        text=True,
-                    )
-                    if cleanup_proc.returncode != 0:
-                        print(
-                            f"{FG_RED}Không thể cleanup tunnel '{tunnel_name}'. Dừng setup Cloudflare Tunnel.{RESET}"
-                        )
-                        if cleanup_proc.stderr:
-                            print(cleanup_proc.stderr.strip())
-                        return
-
-                    # Thử xoá lại sau khi cleanup
-                    delete_proc2 = subprocess.run(
-                        ["cloudflared", "tunnel", "delete", tunnel_name],
-                        capture_output=True,
-                        text=True,
-                    )
-                    if delete_proc2.returncode != 0:
-                        print(
-                            f"{FG_RED}Không thể xoá tunnel cũ '{tunnel_name}' sau khi cleanup. Dừng setup Cloudflare Tunnel.{RESET}"
-                        )
-                        if delete_proc2.stderr:
-                            print(delete_proc2.stderr.strip())
-                        return
-                else:
-                    print(
-                        f"{FG_RED}Không thể xoá tunnel cũ '{tunnel_name}'. Dừng setup Cloudflare Tunnel.{RESET}"
-                    )
-                    if delete_proc.stderr:
-                        print(delete_proc.stderr.strip())
-                    return
-
-            # Thử tạo lại sau khi xoá
-            create_proc2 = subprocess.run(create_cmd, capture_output=True, text=True)
-            if create_proc2.returncode != 0:
-                print(
-                    f"{FG_RED}Không thể tạo lại tunnel '{tunnel_name}'. Dừng setup Cloudflare Tunnel.{RESET}"
-                )
-                if create_proc2.stderr:
-                    print(create_proc2.stderr.strip())
-                return
-        else:
-            print(
-                f"{FG_RED}Không thể tạo tunnel '{tunnel_name}'. Dừng setup Cloudflare Tunnel.{RESET}"
-            )
-            if create_proc.stderr:
-                print(create_proc.stderr.strip())
-            return
+        print(
+            f"{FG_RED}Không thể tạo tunnel '{effective_tunnel_name}'. Dừng setup Cloudflare Tunnel.{RESET}"
+        )
+        if create_proc.stderr:
+            print(create_proc.stderr.strip())
+        return
 
     print("\n--- Tự động tạo config và service systemd cho Cloudflare Tunnel ---")
     created_ok = create_cloudflared_config_and_service(
         hostname=hostname,
-        tunnel_name=tunnel_name,
+        tunnel_name=effective_tunnel_name,
         service=service,
+        config_path=config_path,
     )
 
     print("\n--- Tạo hoặc cập nhật DNS cho tunnel ---")
     route_proc = subprocess.run(
-        ["cloudflared", "tunnel", "route", "dns", tunnel_name, hostname],
+        ["cloudflared", "tunnel", "route", "dns", effective_tunnel_name, hostname],
         capture_output=True,
         text=True,
     )
@@ -575,13 +528,14 @@ def setup_cloudflare_tunnel() -> None:
     if created_ok:
         print(
             "\nThông tin Cloudflare Tunnel:\n"
-        f"- Tunnel name: {tunnel_name}\n"
+        f"- Tunnel name: {effective_tunnel_name}\n"
         f"- Hostname: {hostname}\n"
+        f"- Config file: {config_path}\n"
             f"- Local service: {service}\n"
             "- Config YAML đã được tạo trong ~/.cloudflared.\n"
             "- Service systemd đã được tạo và enable để chạy tunnel liên tục.\n"
             "\nĐể kiểm tra trạng thái service, dùng lệnh:\n"
-            f"  sudo systemctl status cloudflared-{tunnel_name}.service\n"
+            f"  sudo systemctl status cloudflared-{effective_tunnel_name}.service\n"
         )
     else:
         print(
@@ -594,6 +548,7 @@ def create_cloudflared_config_and_service(
     hostname: str,
     tunnel_name: str,
     service: str,
+    config_path: str | None = None,
 ) -> bool:
     home = os.path.expanduser("~")
     cloudflared_dir = os.path.join(home, ".cloudflared")
@@ -641,7 +596,8 @@ def create_cloudflared_config_and_service(
         )
         return False
 
-    config_path = os.path.join(cloudflared_dir, "config.yml")
+    if config_path is None:
+        config_path = get_next_cloudflared_config_path(cloudflared_dir)
     config_content = (
         f"tunnel: {tunnel_id}\n"
         f"credentials-file: {credentials_file}\n"
@@ -650,6 +606,11 @@ def create_cloudflared_config_and_service(
         f"    service: {service}\n"
         "  - service: http_status:404\n"
     )
+
+    if os.path.basename(config_path) != "config.yml":
+        print(
+            f"{FG_YELLOW}Đã tồn tại ~/.cloudflared/config.yml, sẽ tạo file mới: {config_path}{RESET}"
+        )
 
     try:
         with open(config_path, "w", encoding="utf-8") as f:
@@ -695,6 +656,72 @@ def create_cloudflared_config_and_service(
     ]
     run_commands(commands)
     return True
+
+
+def get_next_cloudflared_config_path(cloudflared_dir: str) -> str:
+    """
+    Trả về đường dẫn config Cloudflare có thể ghi an toàn.
+    - Nếu chưa có config.yml: dùng config.yml
+    - Nếu đã có config.yml: tạo file mới dạng config-vN.yml
+    """
+    default_config = os.path.join(cloudflared_dir, "config.yml")
+    if not os.path.exists(default_config):
+        return default_config
+
+    version = 1
+    while True:
+        candidate = os.path.join(cloudflared_dir, f"config-v{version}.yml")
+        if not os.path.exists(candidate):
+            return candidate
+        version += 1
+
+
+def get_tunnel_name_for_config_path(requested_tunnel_name: str, config_path: str) -> str:
+    """
+    Map mỗi file config sang một tunnel riêng.
+    - config.yml -> giữ nguyên tunnel name user nhập
+    - config-vN.yml -> tunnel-name-vN
+    """
+    config_filename = os.path.basename(config_path)
+    if config_filename == "config.yml":
+        return requested_tunnel_name
+
+    suffix = config_filename.removeprefix("config-").removesuffix(".yml")
+    return f"{requested_tunnel_name}-{suffix}"
+
+
+def ensure_unique_cloudflare_tunnel_name(base_tunnel_name: str) -> str:
+    """
+    Đảm bảo tunnel name là duy nhất trên Cloudflare account hiện tại.
+    Nếu đã tồn tại thì thêm hậu tố -1, -2, ...
+    """
+    list_proc = subprocess.run(
+        ["cloudflared", "tunnel", "list", "--output", "json"],
+        capture_output=True,
+        text=True,
+    )
+    if list_proc.returncode != 0:
+        return base_tunnel_name
+
+    try:
+        tunnels = json.loads(list_proc.stdout)
+    except json.JSONDecodeError:
+        return base_tunnel_name
+
+    existing_names = {
+        tunnel.get("name", "").strip()
+        for tunnel in tunnels
+        if isinstance(tunnel, dict) and tunnel.get("name")
+    }
+    if base_tunnel_name not in existing_names:
+        return base_tunnel_name
+
+    index = 1
+    while True:
+        candidate = f"{base_tunnel_name}-{index}"
+        if candidate not in existing_names:
+            return candidate
+        index += 1
 
 
 def regenerate_cloudflare_config_for_existing_tunnel() -> None:
@@ -2432,4 +2459,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nBị huỷ bởi người dùng.")
         sys.exit(1)
-
