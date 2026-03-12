@@ -1288,9 +1288,18 @@ def stop_all_benches() -> None:
         "frappe worker",
         "frappe schedule",
         "rq worker",
+        # gunicorn: bắt cả dạng có và không có 'frappe' trong tên
         "gunicorn.*frappe",
+        "gunicorn.*8000",
+        "gunicorn: master",
+        "gunicorn: worker",
         "node.*watch",
         "socketio.*frappe",
+        # Redis servers chạy bởi bench (ports 11000, 13000, 15000)
+        "redis-server.*frappe",
+        "redis-server.*11000",
+        "redis-server.*13000",
+        "redis-server.*15000",
     ]
 
     print(f"{DIM}Đang tìm các process bench/frappe đang chạy...{RESET}")
@@ -1374,6 +1383,29 @@ def stop_all_benches() -> None:
         print(f"{FG_YELLOW}Thử dùng: sudo kill -KILL {' '.join(remaining)}{RESET}")
     else:
         print(f"\n{FG_GREEN}=== Hoàn thành! Đã dừng tất cả bench/frappe đang chạy. ==={RESET}")
+
+    # Giải phóng tất cả port bench dùng để đảm bảo bench start lại được
+    # 8000=web/gunicorn, 9000=socketio, 11000=redis_queue, 13000=redis_cache, 15000=redis_socketio
+    bench_ports = [8000, 9000, 11000, 13000, 15000]
+    print(f"\n{FG_CYAN}--- Kiểm tra và giải phóng các port bench ({', '.join(str(p) for p in bench_ports)})... ---{RESET}")
+    freed_any = False
+    import time as _time
+    _time.sleep(1)  # Đợi OS release port sau khi kill
+    for port in bench_ports:
+        check_port = subprocess.run(
+            f"fuser {port}/tcp 2>/dev/null",
+            shell=True, capture_output=True, text=True
+        )
+        if check_port.stdout.strip():
+            print(f"  {FG_YELLOW}Port {port} vẫn bị chiếm bởi PID: {check_port.stdout.strip()} → đang kill...{RESET}")
+            subprocess.run(f"fuser -k {port}/tcp 2>/dev/null || true", shell=True)
+            freed_any = True
+        else:
+            print(f"  {FG_GREEN}Port {port}: OK (không bị chiếm){RESET}")
+    if freed_any:
+        print(f"{FG_GREEN}✓ Đã giải phóng các port. Bạn có thể chạy 'bench start' lại.{RESET}")
+    else:
+        print(f"{FG_GREEN}✓ Tất cả port bench đã sẵn sàng.{RESET}")
 
 
 def remove_bench_services() -> None:
