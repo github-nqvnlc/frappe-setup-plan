@@ -166,7 +166,6 @@ def ensure_local_bin_in_shell_rc() -> None:
     ~/.bashrc và ~/.zshrc (idempotent).
     """
     home = os.path.expanduser("~")
-    local_bin = os.path.join(home, ".local", "bin")
     export_line = 'export PATH="$HOME/.local/bin:$PATH"'
 
     rc_files = [".bashrc", ".zshrc"]
@@ -2352,6 +2351,275 @@ def restart_cloudflare_service() -> None:
         print(f"\n{FG_YELLOW}⚠ Một số service không restart được. Kiểm tra log: sudo journalctl -u <service> -n 30{RESET}")
 
 
+def run_command_capture(cmd: str) -> tuple[int, str, str]:
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def format_bytes_gb(value_bytes: int | None) -> str:
+    if value_bytes is None:
+        return "Không xác định"
+    gb = value_bytes / (1024 ** 3)
+    return f"{gb:.2f} GB"
+
+
+def get_total_memory_bytes() -> int | None:
+    detected = detect_platform()
+    if detected == "linux":
+        try:
+            with open("/proc/meminfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            kb = int(parts[1])
+                            return kb * 1024
+        except (OSError, ValueError):
+            return None
+    if detected == "macos":
+        code, out, _ = run_command_capture("sysctl -n hw.memsize")
+        if code == 0 and out.isdigit():
+            return int(out)
+    return None
+
+
+def get_linux_disk_info() -> list[dict]:
+    cmd = "lsblk -d -o NAME,SIZE,ROTA,TYPE,MODEL --noheadings"
+    code, out, _ = run_command_capture(cmd)
+    if code != 0 or not out:
+        return []
+    disks = []
+    for line in out.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) < 4:
+            continue
+        name, size, rota, dtype = parts[:4]
+        model = parts[4] if len(parts) == 5 else ""
+        if dtype != "disk":
+            continue
+        disk_type = "SSD" if rota == "0" else "HDD"
+        disks.append({
+            "name": name,
+            "size": size,
+            "type": disk_type,
+            "model": model.strip(),
+        })
+    return disks
+
+
+def show_system_config() -> None:
+    print(f"\n{BOLD}=== Kiểm tra cấu hình hệ thống ==={RESET}")
+    cpu_cores = os.cpu_count() or 0
+    total_mem = get_total_memory_bytes()
+    print(f"CPU cores       : {cpu_cores}")
+    print(f"RAM tối đa       : {format_bytes_gb(total_mem)}")
+
+    detected = detect_platform()
+    if detected == "linux":
+        disks = get_linux_disk_info()
+        print(f"Số lượng ổ đĩa  : {len(disks)}")
+        if disks:
+            print("Thông tin ổ đĩa:")
+            for d in disks:
+                model = f" ({d['model']})" if d["model"] else ""
+                print(f"  - {d['name']}: {d['size']} | {d['type']}{model}")
+        else:
+            print("Không đọc được danh sách ổ đĩa.")
+    elif detected == "macos":
+        print("Số lượng ổ đĩa  : Dùng lệnh 'diskutil list' để xem chi tiết.")
+        print("Dung lượng/loại : Dùng lệnh 'diskutil info /dev/diskX'.")
+    else:
+        print("Không xác định được hệ điều hành để đọc ổ đĩa.")
+
+
+def show_os_info() -> None:
+    print(f"\n{BOLD}=== Thông tin hệ điều hành ==={RESET}")
+    detected = detect_platform()
+    print(f"Platform: {platform.platform()}")
+    if detected == "linux":
+        code, out, _ = run_command_capture("cat /etc/os-release")
+        if code == 0 and out:
+            print(out)
+    elif detected == "macos":
+        code, out, _ = run_command_capture("sw_vers")
+        if code == 0 and out:
+            print(out)
+
+
+def show_cpu_info() -> None:
+    print(f"\n{BOLD}=== Thông số CPU ==={RESET}")
+    detected = detect_platform()
+    if detected == "linux":
+        code, out, _ = run_command_capture("lscpu")
+        if code == 0 and out:
+            print(out)
+        else:
+            print("Không lấy được thông tin CPU.")
+    elif detected == "macos":
+        code, out, _ = run_command_capture("sysctl -a | grep machdep.cpu")
+        if code == 0 and out:
+            print(out)
+        else:
+            print("Không lấy được thông tin CPU.")
+    else:
+        print("Không hỗ trợ hệ điều hành này.")
+
+
+def show_ram_info() -> None:
+    print(f"\n{BOLD}=== Thông số RAM ==={RESET}")
+    total_mem = get_total_memory_bytes()
+    print(f"RAM tối đa: {format_bytes_gb(total_mem)}")
+
+
+def show_ram_usage() -> None:
+    print(f"\n{BOLD}=== Chi tiết RAM đang sử dụng ==={RESET}")
+    detected = detect_platform()
+    if detected == "linux":
+        code, out, _ = run_command_capture("free -h")
+        if code == 0 and out:
+            print(out)
+        else:
+            print("Không lấy được thông tin RAM usage.")
+    elif detected == "macos":
+        code, out, _ = run_command_capture("vm_stat")
+        if code == 0 and out:
+            print(out)
+        else:
+            print("Không lấy được thông tin RAM usage.")
+    else:
+        print("Không hỗ trợ hệ điều hành này.")
+
+
+def show_disk_info() -> None:
+    print(f"\n{BOLD}=== Thông số ổ đĩa DISK ==={RESET}")
+    detected = detect_platform()
+    if detected == "linux":
+        code, out, _ = run_command_capture("lsblk -d -o NAME,MODEL,SIZE,ROTA,TYPE")
+        if code == 0 and out:
+            print(out)
+            print("Ghi chú: ROTA=0 -> SSD, ROTA=1 -> HDD")
+        else:
+            print("Không lấy được thông tin ổ đĩa.")
+    elif detected == "macos":
+        code, out, _ = run_command_capture("diskutil list")
+        if code == 0 and out:
+            print(out)
+        else:
+            print("Không lấy được thông tin ổ đĩa.")
+    else:
+        print("Không hỗ trợ hệ điều hành này.")
+
+
+def show_disk_usage() -> None:
+    print(f"\n{BOLD}=== Chi tiết ổ đĩa DISK đang sử dụng ==={RESET}")
+    code, out, _ = run_command_capture("df -h")
+    if code == 0 and out:
+        print(out)
+    else:
+        print("Không lấy được thông tin usage ổ đĩa.")
+
+
+def show_task_manager() -> None:
+    print(f"\n{BOLD}=== Task manager -> Các tiến trình đang chạy ==={RESET}")
+    code, out, _ = run_command_capture("ps aux --sort=-%cpu | head -n 20")
+    if code == 0 and out:
+        print(out)
+    else:
+        print("Không lấy được danh sách tiến trình.")
+
+
+def show_ports_in_use() -> None:
+    print(f"\n{BOLD}=== Chi tiết các PORT đang sử dụng ==={RESET}")
+    detected = detect_platform()
+    if detected == "linux":
+        code, out, _ = run_command_capture("ss -tulpn")
+        if code == 0 and out:
+            print(out)
+        else:
+            print("Không lấy được danh sách port (ss). Thử dùng lsof.")
+            code, out, _ = run_command_capture("lsof -i -P -n | head -n 50")
+            if code == 0 and out:
+                print(out)
+    elif detected == "macos":
+        code, out, _ = run_command_capture("lsof -i -P -n | head -n 50")
+        if code == 0 and out:
+            print(out)
+        else:
+            print("Không lấy được danh sách port.")
+    else:
+        print("Không hỗ trợ hệ điều hành này.")
+
+
+def show_hardware_summary() -> None:
+    print(f"\n{BOLD}=== Tổng hợp các thông số về phần cứng của server ==={RESET}")
+    detected = detect_platform()
+    if detected == "linux":
+        cpu_info = run_command_capture("lscpu")[1]
+        mem_info = run_command_capture("free -h")[1]
+        disk_info = run_command_capture("lsblk -d -o NAME,MODEL,SIZE,ROTA,TYPE")[1]
+        if cpu_info:
+            print("\n--- CPU ---")
+            print(cpu_info)
+        if mem_info:
+            print("\n--- RAM ---")
+            print(mem_info)
+        if disk_info:
+            print("\n--- DISK ---")
+            print(disk_info)
+    elif detected == "macos":
+        code, out, _ = run_command_capture("system_profiler SPHardwareDataType")
+        if code == 0 and out:
+            print(out)
+        else:
+            print("Không lấy được thông tin phần cứng.")
+    else:
+        print("Không hỗ trợ hệ điều hành này.")
+
+
+def system_check_menu() -> None:
+    while True:
+        print(f"\n{BOLD}========================{RESET}")
+        print(f"{BOLD}  MENU 17 - KIỂM TRA HỆ THỐNG{RESET}")
+        print(f"{BOLD}========================{RESET}")
+        print("  1) Kiểm tra cấu hình hệ thống")
+        print("  2) Thông tin về hệ điều hành")
+        print("  3) Thông số CPU")
+        print("  4) Thông số RAM")
+        print("  5) Chi tiết RAM đang sử dụng")
+        print("  6) Thông số ổ đĩa DISK")
+        print("  7) Chi tiết ổ đĩa DISK đang sử dụng")
+        print("  8) Task manager -> Các tiến trình đang chạy")
+        print("  9) Chi tiết các PORT đang sử dụng")
+        print("  10) Tổng hợp các thông số về phần cứng của server")
+        print("  0) Quay lại menu chính")
+
+        choice = input(f"{FG_YELLOW}\nNhập lựa chọn: {RESET}").strip()
+        if choice == "1":
+            show_system_config()
+        elif choice == "2":
+            show_os_info()
+        elif choice == "3":
+            show_cpu_info()
+        elif choice == "4":
+            show_ram_info()
+        elif choice == "5":
+            show_ram_usage()
+        elif choice == "6":
+            show_disk_info()
+        elif choice == "7":
+            show_disk_usage()
+        elif choice == "8":
+            show_task_manager()
+        elif choice == "9":
+            show_ports_in_use()
+        elif choice == "10":
+            show_hardware_summary()
+        elif choice == "0":
+            break
+        else:
+            print("Lựa chọn không hợp lệ, vui lòng nhập lại.")
+
+
 def detect_platform() -> str:
     system = platform.system().lower()
     if system == "darwin":
@@ -2387,23 +2655,24 @@ def print_menu(detected: str) -> None:
     print(f"  DB/Cache: {db_status}")
     
     print(f"\n{BOLD}Chọn tác vụ:{RESET}")
-    print(f"  {FG_CYAN}1{RESET}) Setup FULL cho {detected} (hệ thống + môi trường + Bench/source Frappe)")
-    print(f"  {FG_GREEN}2{RESET}) Kiểm tra môi trường (các tool đã cài đặt)")
-    print(f"  {FG_CYAN}3{RESET}) Chỉ cài wkhtmltopdf từ file .deb local")
-    print(f"  {FG_RED}4{RESET}) RESET / gỡ toàn bộ dependency Frappe đã cài")
-    print(f"  {FG_CYAN}5{RESET}) Tạo Site mới cho Bench (bench new-site)")
-    print(f"  {FG_CYAN}6{RESET}) Setup Cloudflare Tunnel (cloudflared + tạo tunnel + route DNS)")
-    print(f"  {FG_CYAN}7{RESET}) Regenerate config + service cho Cloudflare Tunnel đã tồn tại")
-    print(f"  {FG_RED}8{RESET}) Xóa toàn bộ tunnel cloudflared và service systemctl liên quan")
-    print(f"  {FG_YELLOW}9{RESET}) Dừng tất cả bench đang chạy (bench start / worker / gunicorn)")
-    print(f"  {FG_RED}10{RESET}) Xóa service systemctl của bench (frappe-bench-web, worker, schedule...)") 
-    print(f"  {FG_CYAN}11{RESET}) Tạo service tự động 'bench start' sau reboot (tạo lại nếu đã tồn tại)")
-    print(f"  {FG_RED}12{RESET}) Xóa service tự động bench start")
-    print(f"  {FG_GREEN}13{RESET}) Kiểm tra trạng thái Cloudflare Tunnel")
-    print(f"  {FG_CYAN}14{RESET}) Thêm hostname/service vào Cloudflare Tunnel config (config.yml)")
-    print(f"  {FG_RED}15{RESET}) Xóa hostname khỏi Cloudflare Tunnel config (config.yml)")
-    print(f"  {FG_CYAN}16{RESET}) Restart service Cloudflare Tunnel")
-    print(f"  {FG_CYAN}0{RESET}) Thoát")
+    print(f"  {FG_CYAN}1) Setup FULL cho {detected} (hệ thống + môi trường + Bench/source Frappe){RESET}")
+    print(f"  {FG_GREEN}2) Kiểm tra môi trường (các tool đã cài đặt){RESET}")
+    print(f"  {FG_CYAN}3) Chỉ cài wkhtmltopdf từ file .deb local{RESET}")
+    print(f"  {FG_RED}4) RESET / gỡ toàn bộ dependency Frappe đã cài{RESET}")
+    print(f"  {FG_CYAN}5) Tạo Site mới cho Bench (bench new-site){RESET}")
+    print(f"  {FG_CYAN}6) Setup Cloudflare Tunnel (cloudflared + tạo tunnel + route DNS){RESET}")
+    print(f"  {FG_CYAN}7) Regenerate config + service cho Cloudflare Tunnel đã tồn tại{RESET}")
+    print(f"  {FG_RED}8) Xóa toàn bộ tunnel cloudflared và service systemctl liên quan{RESET}")
+    print(f"  {FG_YELLOW}9) Dừng tất cả bench đang chạy (bench start / worker / gunicorn){RESET}")
+    print(f"  {FG_RED}10) Xóa service systemctl của bench (frappe-bench-web, worker, schedule...){RESET}") 
+    print(f"  {FG_CYAN}11) Tạo service tự động 'bench start' sau reboot (tạo lại nếu đã tồn tại){RESET}")
+    print(f"  {FG_RED}12) Xóa service tự động bench start{RESET}")
+    print(f"  {FG_GREEN}13) Kiểm tra trạng thái Cloudflare Tunnel{RESET}")
+    print(f"  {FG_CYAN}14) Thêm hostname/service vào Cloudflare Tunnel config (config.yml){RESET}")
+    print(f"  {FG_RED}15) Xóa hostname khỏi Cloudflare Tunnel config (config.yml){RESET}")
+    print(f"  {FG_CYAN}16) Restart service Cloudflare Tunnel{RESET}")
+    print(f"  {FG_CYAN}17) Kiểm tra hệ thống{RESET}")
+    print(f"  {FG_CYAN}0) Thoát{RESET}")
 
 
 def main() -> None:
@@ -2478,6 +2747,8 @@ def main() -> None:
             remove_cloudflare_ingress()
         elif choice == "16":
             restart_cloudflare_service()
+        elif choice == "17":
+            system_check_menu()
         elif choice == "0":
             print("Thoát Frappe setup menu.")
             break
