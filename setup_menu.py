@@ -1,3 +1,4 @@
+import getpass
 import json
 import os
 import platform
@@ -501,25 +502,18 @@ def setup_cloudflare_tunnel() -> None:
 
     print("\n--- Tạo hoặc cập nhật DNS cho tunnel ---")
     route_proc = subprocess.run(
-        ["cloudflared", "tunnel", "route", "dns", effective_tunnel_name, hostname],
+        ["cloudflared", "tunnel", "route", "dns", "--overwrite-dns", effective_tunnel_name, hostname],
         capture_output=True,
         text=True,
     )
     if route_proc.returncode != 0:
         msg = (route_proc.stderr or "") + "\n" + (route_proc.stdout or "")
-        msg_lower = msg.lower()
-        # Nếu bản ghi DNS đã tồn tại, coi như thành công (giữ nguyên bản ghi hiện có)
-        if "an a, aaaa, or cname record with that host already exists" in msg_lower:
-            print(
-                f"{FG_YELLOW}Bản ghi DNS cho {hostname} đã tồn tại trong Cloudflare. Giữ nguyên bản ghi hiện tại.{RESET}"
-            )
-        else:
-            print(
-                f"{FG_RED}Không thể tạo/route DNS cho hostname {hostname}. Dừng setup Cloudflare Tunnel.{RESET}"
-            )
-            if route_proc.stderr:
-                print(route_proc.stderr.strip())
-            return
+        print(
+            f"{FG_RED}Không thể tạo/route DNS cho hostname {hostname}. Dừng setup Cloudflare Tunnel.{RESET}"
+        )
+        if route_proc.stderr:
+            print(route_proc.stderr.strip())
+        return
     else:
         if route_proc.stdout.strip():
             print(route_proc.stdout.strip())
@@ -629,7 +623,7 @@ def create_cloudflared_config_and_service(
         "\n"
         "[Service]\n"
         "Type=simple\n"
-        f"User={os.getlogin()}\n"
+        f"User={getpass.getuser()}\n"
         f"ExecStart=/usr/bin/cloudflared --config {config_path} --no-autoupdate tunnel run {tunnel_name}\n"
         "Restart=always\n"
         "RestartSec=5s\n"
@@ -705,6 +699,9 @@ def ensure_unique_cloudflare_tunnel_name(base_tunnel_name: str) -> str:
     try:
         tunnels = json.loads(list_proc.stdout)
     except json.JSONDecodeError:
+        return base_tunnel_name
+
+    if not isinstance(tunnels, list):
         return base_tunnel_name
 
     existing_names = {
